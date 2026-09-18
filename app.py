@@ -1,7 +1,6 @@
 import streamlit as st
 import torch
 from diffusers import StableDiffusionPipeline
-from deep_translator import GoogleTranslator
 import time
 
 st.set_page_config(page_title="Xmugi / Cpu Demo")
@@ -20,12 +19,11 @@ def load_pipeline():
     pipe.enable_attention_slicing()
     return pipe
 
-user_input = st.text_input("", "")
+st.write("Please enter your prompt in English.")
+user_input = st.text_input("Prompt (English only)", "")
 
 if st.button("execution"):
     if user_input.strip():
-        translated_prompt = GoogleTranslator(source='auto', target='en').translate(user_input)
-
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -44,7 +42,7 @@ if st.button("execution"):
         pipe = load_pipeline()
         
         image = pipe(
-            translated_prompt,
+            user_input,
             height=256,
             width=256,
             num_inference_steps=total_steps,
