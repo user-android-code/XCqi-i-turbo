@@ -3,7 +3,8 @@ from PIL import Image
 import numpy as np
 import torch
 from transformers import pipeline
-from simple_lama_inpainting import SimpleLama
+import os
+from urllib.request import urlretrieve
 
 st.set_page_config(page_title="2D Parallax Effect Previewer", layout="wide")
 
@@ -11,16 +12,37 @@ st.title("2D Parallax Effect Previewer")
 
 @st.cache_resource
 def load_depth_estimator():
-    # device=-1 で明示的にCPUを使うように指定するよ
     return pipeline("depth-estimation", model="Intel/dpt-hybrid-midas", device=-1)
 
 @st.cache_resource
-def load_lama_inpainter():
-    # SimpleLamaもCPUで動くように設定
-    return SimpleLama(device=torch.device('cpu'))
+def load_lama_model():
+    model_path = os.path.expanduser("~/.cache/simple_lama/big-lama.pt")
+    if not os.path.exists(model_path):
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        url = "https://github.com/artyomgoncharov/big-lama/raw/main/big-lama.pt"
+        urlretrieve(url, model_path)
+    
+    # map_location='cpu' を指定してロードするのがポイント
+    model = torch.jit.load(model_path, map_location="cpu")
+    model.eval()
+    return model
+
+def run_lama_inpainting(model, image, mask):
+    img_np = np.array(image.convert("RGB")).astype(np.float32) / 255.0
+    mask_np = np.array(mask.convert("L")).astype(np.float32) / 255.0
+    mask_np = (mask_np > 0.5).astype(np.float32)
+
+    img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0)
+    mask_tensor = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(0)
+
+    with torch.no_grad():
+        output = model(img_tensor, mask_tensor)
+    
+    out_np = output[0].permute(1, 2, 0).clamp(0, 1).numpy() * 255.0
+    return Image.fromarray(out_np.astype(np.uint8))
 
 depth_estimator = load_depth_estimator()
-lama_inpainter = load_lama_inpainter()
+lama_model = load_lama_model()
 
 uploaded_file = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png"])
 
@@ -48,7 +70,7 @@ if uploaded_file is not None:
     mask_array = np.where(depth_array > threshold, 255, 0).astype(np.uint8)
     mask_image = Image.fromarray(mask_array)
     
-    inpainted_bg = lama_inpainter(input_image, mask_image)
+    inpainted_bg = run_lama_inpainting(lama_model, input_image, mask_image)
     
     fg_array = np.array(input_image.convert("RGBA"))
     fg_array[:, :, 3] = mask_array
