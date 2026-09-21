@@ -6,3 +6,4 @@ timm
 pillow
 numpy
 opencv-python-headless
+huggingface_hub
