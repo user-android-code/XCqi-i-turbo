@@ -5,4 +5,5 @@ transformers
 timm
 pillow
 numpy
+opencv-python-headless
 simple-lama-inpainting
