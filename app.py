@@ -1,55 +1,82 @@
 import streamlit as st
+from PIL import Image
+import numpy as np
 import torch
-from diffusers import StableDiffusionPipeline
-import time
+from transformers import pipeline
+from simple_lama_inpainting import SimpleLama
 
-st.set_page_config(page_title="Xmugi / Cpu Demo")
+st.set_page_config(page_title="2D Parallax Effect Previewer", layout="wide")
 
-st.title("Xmugi / Cpu Demo")
+st.title("2D Parallax Effect Previewer")
 
 @st.cache_resource
-def load_pipeline():
-    pipe = StableDiffusionPipeline.from_pretrained(
-        "OFA-Sys/small-stable-diffusion-v0",
-        safety_checker=None,
-        feature_extractor=None,
-        torch_dtype=torch.float32,
-        low_cpu_mem_usage=True
-    )
-    pipe.enable_attention_slicing()
-    return pipe
+def load_depth_estimator():
+    return pipeline("depth-estimation", model="Intel/dpt-hybrid-midas")
 
-st.write("Please enter your prompt in English.")
-user_input = st.text_input("Prompt (English only)", "")
+@st.cache_resource
+def load_lama_inpainter():
+    return SimpleLama()
 
-if st.button("execution"):
-    if user_input.strip():
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+depth_estimator = load_depth_estimator()
+lama_inpainter = load_lama_inpainter()
+
+uploaded_file = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    input_image = Image.open(uploaded_file).convert("RGB")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("Original Image")
+        st.image(input_image, use_container_width=True)
+    
+    depth_result = depth_estimator(input_image)
+    depth_map = depth_result["depth"]
+    
+    with col2:
+        st.write("Depth Map")
+        st.image(depth_map, use_container_width=True)
+    
+    depth_array = np.array(depth_map)
+    
+    st.write("Layer Separation Settings")
+    threshold = st.slider("Foreground Threshold", min_value=0, max_value=255, value=128)
+    
+    mask_array = np.where(depth_array > threshold, 255, 0).astype(np.uint8)
+    mask_image = Image.fromarray(mask_array)
+    
+    inpainted_bg = lama_inpainter(input_image, mask_image)
+    
+    fg_array = np.array(input_image.convert("RGBA"))
+    fg_array[:, :, 3] = mask_array
+    fg_image = Image.fromarray(fg_array)
+    
+    st.write("Parallax Controls")
+    shift_x = st.slider("Horizontal Shift (X)", min_value=-50, max_value=50, value=0)
+    shift_y = st.slider("Vertical Shift (Y)", min_value=-50, max_value=50, value=0)
+    
+    def render_parallax(bg, fg, sx, sy, scale=1.1):
+        w, h = bg.size
+        sw, sh = int(w * scale), int(h * scale)
+        bg_scaled = bg.resize((sw, sh), Image.Resampling.LANCZOS)
         
-        total_steps = 20
-        last_percent = [0]
-
-        def callback_fn(step, timestep, latents):
-            current_step = min(step + 1, total_steps)
-            target_percent = int((current_step / total_steps) * 100)
-            for p in range(last_percent[0] + 1, target_percent + 1):
-                progress_bar.progress(p)
-                status_text.text(f"{p}/100")
-                time.sleep(0.01)
-            last_percent[0] = target_percent
-
-        pipe = load_pipeline()
+        cx = (sw - w) // 2 - int(sx * 0.4)
+        cy = (sh - h) // 2 - int(sy * 0.4)
+        cx = max(0, min(cx, sw - w))
+        cy = max(0, min(cy, sh - h))
         
-        image = pipe(
-            user_input,
-            height=256,
-            width=256,
-            num_inference_steps=total_steps,
-            callback=callback_fn,
-            callback_steps=1
-        ).images[0]
+        canvas = bg_scaled.crop((cx, cy, cx + w, cy + h)).convert("RGBA")
+        
+        fg_canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        fg_x = int(sx * 0.6)
+        fg_y = int(sy * 0.6)
+        fg_canvas.paste(fg, (fg_x, fg_y), fg)
+        
+        canvas.paste(fg_canvas, (0, 0), fg_canvas)
+        return canvas
 
-        progress_bar.progress(100)
-        status_text.text("100/100")
-        st.image(image)
+    parallax_result = render_parallax(inpainted_bg, fg_image, shift_x, shift_y)
+    
+    st.write("Parallax Preview")
+    st.image(parallax_result, use_container_width=True)
