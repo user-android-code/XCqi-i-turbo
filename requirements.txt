@@ -1,6 +1,8 @@
 streamlit
 torch
-diffusers
+torchvision
 transformers
-accelerate
-deep-translator
+timm
+pillow
+numpy
+simple-lama-inpainting
