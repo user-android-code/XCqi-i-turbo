@@ -3,8 +3,7 @@ from PIL import Image
 import numpy as np
 import torch
 from transformers import pipeline
-import os
-from urllib.request import Request, urlopen
+from huggingface_hub import hf_hub_download
 
 st.set_page_config(page_title="2D Parallax Effect Previewer", layout="wide")
 
@@ -16,15 +15,10 @@ def load_depth_estimator():
 
 @st.cache_resource
 def load_lama_model():
-    model_path = os.path.expanduser("~/.cache/simple_lama/big-lama.pt")
-    if not os.path.exists(model_path):
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        # Hugging Faceの安定したURLを使用
-        url = "https://huggingface.co/anyines/big-lama/resolve/main/big-lama.pt"
-        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urlopen(req) as response, open(model_path, 'wb') as out_file:
-            out_file.write(response.read())
+    # huggingface_hub を使って safe にダウンロード
+    model_path = hf_hub_download(repo_id="anyines/big-lama", filename="big-lama.pt")
     
+    # map_location='cpu' で CPU 上にロード
     model = torch.jit.load(model_path, map_location="cpu")
     model.eval()
     return model
