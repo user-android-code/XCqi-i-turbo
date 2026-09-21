@@ -11,11 +11,13 @@ st.title("2D Parallax Effect Previewer")
 
 @st.cache_resource
 def load_depth_estimator():
-    return pipeline("depth-estimation", model="Intel/dpt-hybrid-midas")
+    # device=-1 で明示的にCPUを使うように指定するよ
+    return pipeline("depth-estimation", model="Intel/dpt-hybrid-midas", device=-1)
 
 @st.cache_resource
 def load_lama_inpainter():
-    return SimpleLama()
+    # SimpleLamaもCPUで動くように設定
+    return SimpleLama(device=torch.device('cpu'))
 
 depth_estimator = load_depth_estimator()
 lama_inpainter = load_lama_inpainter()
