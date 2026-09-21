@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from transformers import pipeline
 import os
-from urllib.request import urlretrieve
+from urllib.request import Request, urlopen
 
 st.set_page_config(page_title="2D Parallax Effect Previewer", layout="wide")
 
@@ -19,10 +19,12 @@ def load_lama_model():
     model_path = os.path.expanduser("~/.cache/simple_lama/big-lama.pt")
     if not os.path.exists(model_path):
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        url = "https://github.com/artyomgoncharov/big-lama/raw/main/big-lama.pt"
-        urlretrieve(url, model_path)
+        # Hugging Faceの安定したURLを使用
+        url = "https://huggingface.co/anyines/big-lama/resolve/main/big-lama.pt"
+        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urlopen(req) as response, open(model_path, 'wb') as out_file:
+            out_file.write(response.read())
     
-    # map_location='cpu' を指定してロードするのがポイント
     model = torch.jit.load(model_path, map_location="cpu")
     model.eval()
     return model
