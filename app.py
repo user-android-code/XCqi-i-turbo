@@ -8,25 +8,20 @@ import torchvision.transforms as T
 import numpy as np
 from PIL import Image
 import plotly.graph_objects as go
-import urllib.request
+from huggingface_hub import hf_hub_download
 
 st.set_page_config(page_title="2.5D Scene Generator", layout="wide")
 st.title("⚡ 2.5D 空間シーンジェネレーター")
 
-# --- クラウドで絶対に止まらない超軽量モデル直読み込み ---
-MODEL_URL = "https://github.com/intel-isl/MiDaS/releases/download/v2_1/model-small-70d6b9c8.pt"
-MODEL_PATH = "model-small.pt"
-
+# --- Hugging Face から直接・高速ロード ---
 @st.cache_resource
-def load_fast_midas():
-    # モデルファイルが存在しない場合は直接直リンクからダウンロード（数秒で終わる）
-    if not os.path.exists(MODEL_PATH):
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-
-    # intel-isl/MiDaS の Small アーキテクチャを直接ロード
-    # torch.hub を介さないので通信エラーが起きない
+def load_hf_midas():
+    # HF上のMiDaS公式リポジトリから軽量モデルの重み(約40MB)を爆速ダウンロード
+    model_path = hf_hub_download(repo_id="Intel/dpt-hybrid-midas", filename="model-small-70d6b9c8.pt")
+    
+    # モデル構造定義（torch.hubのスクリプト読み込みを排除）
     midas = torch.hub.load("intel-isl/MiDaS", "MiDaS_small", pretrained=False)
-    state_dict = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
+    state_dict = torch.load(model_path, map_location=torch.device('cpu'))
     midas.load_state_dict(state_dict)
     midas.eval()
 
@@ -38,8 +33,8 @@ def load_fast_midas():
     return midas, transforms
 
 try:
-    with st.spinner("AIモデルを読み込み中..."):
-        model, transform = load_fast_midas()
+    with st.spinner("Hugging Faceからモデルを高速読み込み中..."):
+        model, transform = load_hf_midas()
 except Exception as e:
     st.error(f"モデル読み込みエラー: {e}")
 
