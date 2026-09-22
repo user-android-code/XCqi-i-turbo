@@ -1,8 +1,2 @@
 streamlit
 torch
-torchvision
-transformers
-timm
-pillow
-numpy
-opencv-python-headless
