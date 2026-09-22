@@ -12,11 +12,11 @@ st.title("⚡ 爆速版：一枚の画像から2.5D空間を作るAI")
 # --- 爆速・超軽量モデルのロード ---
 @st.cache_resource
 def load_depth_pipeline():
-    # Intelの超軽量DPTモデル(約60MB)を使用。初回ロードが劇的に早くなる！
-    pipe = pipeline(task="depth-estimation", model="Intel/dpt-tiny", device=-1) # CPUで動作
+    # Depth Anything の小型軽量モデル(約90MB)を使用！精度が良くて高速
+    pipe = pipeline(task="depth-estimation", model="LiheYoung/depth-anything-small-hf", device=-1)
     return pipe
 
-with st.spinner("軽量モデルを準備中...（最初だけ数秒かかります）"):
+with st.spinner("軽量モデルを準備中...（初回のみダウンロードが入ります）"):
     depth_pipe = load_depth_pipeline()
 
 # --- サイドバー ---
@@ -43,7 +43,13 @@ if uploaded_file is not None:
     # 深度推定の実行（一瞬で終わる）
     with st.spinner("奥行きを推測中..."):
         result = depth_pipe(img_resized)
-        depth_map = np.array(result["depth"])
+        
+        # PIL Image か Numpy 配列で返ってくるのを処理
+        raw_depth = result["depth"]
+        if isinstance(raw_depth, Image.Image):
+            depth_map = np.array(raw_depth).astype(np.float32)
+        else:
+            depth_map = np.array(raw_depth, dtype=np.float32)
         
         # 0〜1に正規化
         depth_min, depth_max = depth_map.min(), depth_map.max()
