@@ -1,8 +1,6 @@
 streamlit>=1.30.0
 torch>=2.0.0 --extra-index-url https://download.pytorch.org/whl/cpu
-torchvision>=0.15.0 --extra-index-url https://download.pytorch.org/whl/cpu
-huggingface_hub>=0.19.0
+transformers>=4.35.0
 pillow>=10.0.0
 numpy>=1.24.0
 plotly>=5.18.0
-timm>=0.9.0
