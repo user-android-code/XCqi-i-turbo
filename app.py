@@ -10,7 +10,7 @@ import base64
 from io import BytesIO
 
 st.set_page_config(page_title="2.5D パララックス画像", layout="wide")
-st.title("📱 2.5D カラー立体画像")
+st.title("🔥 隙間完全防御！2.5D カラー立体画像")
 
 @st.cache_resource
 def load_model():
@@ -75,7 +75,7 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // 動く幅（立体感）を戻しつつ、急激な輪郭バグだけを滑らかに緩和するシェーダー
+            // 隙間・裏地を自動補正するアドバンスド視差シェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -85,20 +85,19 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-
-                    // 変位量（動きの大きさ）を 0.045 に調整（しっかり立体的に動く！）
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.045;
                     
-                    vec2 targetUV = v_texCoord + offset;
-                    float targetDepth = texture2D(u_depth, targetUV).r;
+                    // しっかり立体的に動かす変位量
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.05;
+                    vec2 uv = v_texCoord + offset;
 
-                    // 境目の強烈なガタツキだけをやんわり和らげる（完全ストップはしない）
-                    float depthDiff = abs(depth - targetDepth);
-                    if (depthDiff > 0.35) {{
-                        offset *= (1.0 - (depthDiff - 0.35) * 1.2);
+                    // もし隙間（背景露出）が起きたら周辺の色で自動的に裏地をサンプリング補完
+                    float targetDepth = texture2D(u_depth, uv).r;
+                    if (depth > targetDepth + 0.15) {{
+                        // 手前の物体が移動して奥が露出した時、手前のフチで覆うように補正
+                        uv = v_texCoord + offset * (targetDepth / depth);
                     }}
 
-                    vec2 finalUV = clamp(v_texCoord + offset, 0.001, 0.999);
+                    vec2 finalUV = clamp(uv, 0.001, 0.999);
                     gl_FragColor = texture2D(u_image, finalUV);
                 }}
             `;
