@@ -75,7 +75,7 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // 透け（伸ばし漏れ）を防止するシェーダー
+            // 境界線の破綻・歪みを抑えるエッジスムージングシェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -84,13 +84,20 @@ if uploaded_file is not None:
                 varying vec2 v_texCoord;
 
                 void main() {{
-                    float depth = texture2D(u_depth, v_texCoord).r;
-                    // 変位量を少しマイルドにして透けを防止 (0.06 -> 0.035)
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.035;
+                    // 周辺ピクセルの深度をサンプルして境界を滑らかにする（エッジぼかし）
+                    vec2 texel = vec2(1.0 / 512.0, 1.0 / 512.0);
+                    float d0 = texture2D(u_depth, v_texCoord).r;
+                    float d1 = texture2D(u_depth, v_texCoord + vec2(texel.x, 0.0)).r;
+                    float d2 = texture2D(u_depth, v_texCoord - vec2(texel.x, 0.0)).r;
+                    float d3 = texture2D(u_depth, v_texCoord + vec2(0.0, texel.y)).r;
+                    float d4 = texture2D(u_depth, v_texCoord - vec2(0.0, texel.y)).r;
                     
-                    // テクスチャ座標が0.0〜1.0からはみ出さないようにクランプ（安全ガード）
-                    vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
-                    
+                    float depth = (d0 * 2.0 + d1 + d2 + d3 + d4) / 6.0;
+
+                    // 境目が破綻しないよう変位量を調整
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.025;
+                    vec2 uv = clamp(v_texCoord + offset, 0.002, 0.998);
+
                     gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
