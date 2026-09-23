@@ -9,15 +9,15 @@ from transformers import pipeline
 import base64
 from io import BytesIO
 
-st.set_page_config(page_title="スマホ対応 2.5Dカラー動く画像", layout="wide")
-st.title("📱 スマホで動く！カラー2.5D立体画像ジェネレーター")
+st.set_page_config(page_title="2.5D パララックス画像", layout="wide")
+st.title("📱 2.5D カラー立体画像")
 
 @st.cache_resource
 def load_model():
     return pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
 
 try:
-    with st.spinner("AIが準備中..."):
+    with st.spinner("AIモデル準備中..."):
         pipe = load_model()
 except Exception as e:
     st.error(f"エラー: {e}")
@@ -31,25 +31,30 @@ uploaded_file = st.file_uploader("画像をアップロードしてね", type=["
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
-    
-    with st.spinner("AIが奥行きを計算中..."):
+    width, height = image.size
+    aspect_ratio = height / width  # アスペクト比を計算
+
+    with st.spinner("奥行きを計算中..."):
         result = pipe(image)
         depth_image = result["depth"].convert("L")
 
-    st.subheader("👇 下のカラー画像を指でスワイプ（触って）動かしてみてね！")
+    st.subheader("👇 指でなぞって動かしてみてね！")
 
     img_b64 = image_to_base64(image)
     depth_b64 = image_to_base64(depth_image)
 
-    # スマホのタッチ（Touch）とマウスの両方に対応したHTML/WebGLコード
+    # 黒い余白が出ないように画像の縦横比に合わせて枠の高さを動的に設定
+    display_height = int(600 * aspect_ratio)
+
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
         <style>
-            body {{ margin: 0; overflow: hidden; background-color: #0e1117; display: flex; justify-content: center; align-items: center; touch-action: none; }}
-            canvas {{ border-radius: 12px; width: 100%; max-width: 500px; height: auto; touch-action: none; }}
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ background-color: transparent; display: flex; justify-content: center; align-items: center; overflow: hidden; }}
+            canvas {{ width: 100%; height: auto; border-radius: 12px; touch-action: none; }}
         </style>
     </head>
     <body>
@@ -80,7 +85,7 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.08;
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.06;
                     gl_FragColor = texture2D(u_image, v_texCoord + offset);
                 }}
             `;
@@ -119,10 +124,7 @@ if uploaded_file is not None:
                 targetY = ((clientY - rect.top) / rect.height - 0.5) * 2;
             }}
 
-            // PCのマウス操作
             window.addEventListener("mousemove", (e) => updatePos(e.clientX, e.clientY));
-
-            // スマホのタッチ操作（指で触ったとき）
             window.addEventListener("touchmove", (e) => {{
                 if(e.touches.length > 0) {{
                     updatePos(e.touches[0].clientX, e.touches[0].clientY);
@@ -170,4 +172,4 @@ if uploaded_file is not None:
     </html>
     """
 
-    components.html(html_code, height=500)
+    components.html(html_code, height=display_height + 20)
