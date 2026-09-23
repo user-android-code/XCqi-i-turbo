@@ -32,7 +32,7 @@ uploaded_file = st.file_uploader("画像をアップロードしてね", type=["
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     width, height = image.size
-    aspect_ratio = height / width  # アスペクト比を計算
+    aspect_ratio = height / width
 
     with st.spinner("奥行きを計算中..."):
         result = pipe(image)
@@ -43,7 +43,6 @@ if uploaded_file is not None:
     img_b64 = image_to_base64(image)
     depth_b64 = image_to_base64(depth_image)
 
-    # 黒い余白が出ないように画像の縦横比に合わせて枠の高さを動的に設定
     display_height = int(600 * aspect_ratio)
 
     html_code = f"""
@@ -76,6 +75,7 @@ if uploaded_file is not None:
                 }}
             `;
 
+            // 透け（伸ばし漏れ）を防止するシェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -85,8 +85,13 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.06;
-                    gl_FragColor = texture2D(u_image, v_texCoord + offset);
+                    // 変位量を少しマイルドにして透けを防止 (0.06 -> 0.035)
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.035;
+                    
+                    // テクスチャ座標が0.0〜1.0からはみ出さないようにクランプ（安全ガード）
+                    vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
+                    
+                    gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
 
