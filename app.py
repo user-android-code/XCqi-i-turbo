@@ -75,7 +75,7 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // 境界線の破綻・歪みを抑えるエッジスムージングシェーダー
+            // 輪郭（頭のフチ）の引っ張り現象を防ぐ最新シェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -84,21 +84,26 @@ if uploaded_file is not None:
                 varying vec2 v_texCoord;
 
                 void main() {{
-                    // 周辺ピクセルの深度をサンプルして境界を滑らかにする（エッジぼかし）
-                    vec2 texel = vec2(1.0 / 512.0, 1.0 / 512.0);
-                    float d0 = texture2D(u_depth, v_texCoord).r;
-                    float d1 = texture2D(u_depth, v_texCoord + vec2(texel.x, 0.0)).r;
-                    float d2 = texture2D(u_depth, v_texCoord - vec2(texel.x, 0.0)).r;
-                    float d3 = texture2D(u_depth, v_texCoord + vec2(0.0, texel.y)).r;
-                    float d4 = texture2D(u_depth, v_texCoord - vec2(0.0, texel.y)).r;
+                    // 深度（Depth）を取得
+                    float rawDepth = texture2D(u_depth, v_texCoord).r;
                     
-                    float depth = (d0 * 2.0 + d1 + d2 + d3 + d4) / 6.0;
+                    // 輪郭の段差をなだらかにするコントラスト調整（エッジの急激な破綻を抑える）
+                    float depth = smoothstep(0.05, 0.95, rawDepth);
 
-                    // 境目が破綻しないよう変位量を調整
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.025;
-                    vec2 uv = clamp(v_texCoord + offset, 0.002, 0.998);
+                    // 変位（ズレ）を極小＆自然に調整
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.02;
+                    
+                    // 参照位置のピクセル
+                    vec2 targetUV = v_texCoord + offset;
 
-                    gl_FragColor = texture2D(u_image, uv);
+                    // 参照ピクセルの深度チェック（奥のピクセルを引っ張りすぎない保護）
+                    float targetDepth = texture2D(u_depth, targetUV).r;
+                    if (abs(rawDepth - targetDepth) > 0.2) {{
+                        offset *= 0.3; // 深度差が大きい境目は変位を自動的に小さく抑える
+                    }}
+
+                    vec2 finalUV = clamp(v_texCoord + offset, 0.001, 0.999);
+                    gl_FragColor = texture2D(u_image, finalUV);
                 }}
             `;
 
