@@ -75,7 +75,7 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // 輪郭（頭のフチ）の引っ張り現象を防ぐ最新シェーダー
+            // 動く幅（立体感）を戻しつつ、急激な輪郭バグだけを滑らかに緩和するシェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -84,22 +84,18 @@ if uploaded_file is not None:
                 varying vec2 v_texCoord;
 
                 void main() {{
-                    // 深度（Depth）を取得
-                    float rawDepth = texture2D(u_depth, v_texCoord).r;
-                    
-                    // 輪郭の段差をなだらかにするコントラスト調整（エッジの急激な破綻を抑える）
-                    float depth = smoothstep(0.05, 0.95, rawDepth);
+                    float depth = texture2D(u_depth, v_texCoord).r;
 
-                    // 変位（ズレ）を極小＆自然に調整
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.02;
+                    // 変位量（動きの大きさ）を 0.045 に調整（しっかり立体的に動く！）
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.045;
                     
-                    // 参照位置のピクセル
                     vec2 targetUV = v_texCoord + offset;
-
-                    // 参照ピクセルの深度チェック（奥のピクセルを引っ張りすぎない保護）
                     float targetDepth = texture2D(u_depth, targetUV).r;
-                    if (abs(rawDepth - targetDepth) > 0.2) {{
-                        offset *= 0.3; // 深度差が大きい境目は変位を自動的に小さく抑える
+
+                    // 境目の強烈なガタツキだけをやんわり和らげる（完全ストップはしない）
+                    float depthDiff = abs(depth - targetDepth);
+                    if (depthDiff > 0.35) {{
+                        offset *= (1.0 - (depthDiff - 0.35) * 1.2);
                     }}
 
                     vec2 finalUV = clamp(v_texCoord + offset, 0.001, 0.999);
