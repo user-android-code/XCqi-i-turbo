@@ -9,57 +9,47 @@ from transformers import pipeline
 import base64
 from io import BytesIO
 
-st.set_page_config(page_title="2.5D 視差効果（パララックス）AI", layout="wide")
-st.title("🎥 2.5D 視差効果（ゆらゆら動く画像）ジェネレーター")
+st.set_page_config(page_title="スマホ対応 2.5Dカラー動く画像", layout="wide")
+st.title("📱 スマホで動く！カラー2.5D立体画像ジェネレーター")
 
 @st.cache_resource
 def load_model():
     return pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
 
 try:
-    with st.spinner("AIモデルを読み込み中..."):
+    with st.spinner("AIが準備中..."):
         pipe = load_model()
 except Exception as e:
-    st.error(f"モデル読み込みエラー: {e}")
+    st.error(f"エラー: {e}")
 
-# 画像をBase64文字列に変換するヘルパー関数
 def image_to_base64(img):
     buffered = BytesIO()
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
 
-uploaded_file = st.file_uploader("画像をアップロードしてください", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("画像をアップロードしてね", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("元画像")
-        st.image(image, use_container_width=True)
-
-    with st.spinner("奥行き（深度）を推定中..."):
+    with st.spinner("AIが奥行きを計算中..."):
         result = pipe(image)
         depth_image = result["depth"].convert("L")
 
-    with col2:
-        st.subheader("生成された深度画像")
-        st.image(depth_image, use_container_width=True)
+    st.subheader("👇 下のカラー画像を指でスワイプ（触って）動かしてみてね！")
 
-    st.subheader("🎮 2.5D パララックス空間 (マウスを画像の上で動かしてみてね！)")
-
-    # 画像と深度マップをHTML/JSに埋め込む
     img_b64 = image_to_base64(image)
     depth_b64 = image_to_base64(depth_image)
 
-    # 2.5Dパララックス効果を生むHTML/WebGLコード
+    # スマホのタッチ（Touch）とマウスの両方に対応したHTML/WebGLコード
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
         <style>
-            body {{ margin: 0; overflow: hidden; background-color: #0e1117; display: flex; justify-content: center; align-items: center; }}
-            canvas {{ border-radius: 10px; cursor: pointer; max-width: 100%; height: auto; }}
+            body {{ margin: 0; overflow: hidden; background-color: #0e1117; display: flex; justify-content: center; align-items: center; touch-action: none; }}
+            canvas {{ border-radius: 12px; width: 100%; max-width: 500px; height: auto; touch-action: none; }}
         </style>
     </head>
     <body>
@@ -71,11 +61,6 @@ if uploaded_file is not None:
             const canvas = document.getElementById("glcanvas");
             const gl = canvas.getContext("webgl");
 
-            if (!gl) {{
-                alert("WebGLがサポートされていません");
-            }}
-
-            // バーテックスシェーダー
             const vsSource = `
                 attribute vec2 a_position;
                 varying vec2 v_texCoord;
@@ -86,7 +71,6 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // フラグメントシェーダー (深度に基づく視差ずれ効果)
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -96,7 +80,7 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.05;
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.08;
                     gl_FragColor = texture2D(u_image, v_texCoord + offset);
                 }}
             `;
@@ -129,11 +113,21 @@ if uploaded_file is not None:
             let mouseX = 0, mouseY = 0;
             let targetX = 0, targetY = 0;
 
-            window.addEventListener("mousemove", (e) => {{
+            function updatePos(clientX, clientY) {{
                 const rect = canvas.getBoundingClientRect();
-                targetX = ((e.clientX - rect.left) / rect.width - 0.5) * 2;
-                targetY = ((e.clientY - rect.top) / rect.height - 0.5) * 2;
-            }});
+                targetX = ((clientX - rect.left) / rect.width - 0.5) * 2;
+                targetY = ((clientY - rect.top) / rect.height - 0.5) * 2;
+            }}
+
+            // PCのマウス操作
+            window.addEventListener("mousemove", (e) => updatePos(e.clientX, e.clientY));
+
+            // スマホのタッチ操作（指で触ったとき）
+            window.addEventListener("touchmove", (e) => {{
+                if(e.touches.length > 0) {{
+                    updatePos(e.touches[0].clientX, e.touches[0].clientY);
+                }}
+            }}, {{passive: true}});
 
             function loadTexture(url, index) {{
                 const texture = gl.createTexture();
@@ -154,7 +148,6 @@ if uploaded_file is not None:
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
                 }};
                 img.src = url;
-                return texture;
             }}
 
             loadTexture(imgSrc, 0);
@@ -177,4 +170,4 @@ if uploaded_file is not None:
     </html>
     """
 
-    components.html(html_code, height=600)
+    components.html(html_code, height=500)
