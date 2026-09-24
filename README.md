@@ -1,10 +1,10 @@
-# XQon i-turbo
+# XCqi i-turbo
 
 **A highly optimized, ultra-lightweight (<1GB) AI model.**
 
 ## Overview
 
-**XQon s-omni** ("s" stands for **Speak**, and "omni" stands for **Universal/All**) is a next-generation compact language model designed for efficient, local, and edge-device deployment. 
+**XCqi i-turbo** ("i" stands for **imagen**, and "turbo" stands for **efficient**) is a next-generation compact language model designed for efficient, local, and edge-device deployment. 
 
 Despite its tiny footprint of **under 1GB**, it breaks the barrier of language limitations by supporting **29+ languages** seamlessly.
 
