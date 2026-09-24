@@ -9,36 +9,30 @@ from transformers import pipeline
 import base64
 from io import BytesIO
 
-st.set_page_config(page_title="2.5D パララックス画像", layout="wide")
-st.title("🔥 隙間完全防御！2.5D カラー立体画像")
+st.set_page_config(page_title="XCqi", layout="wide")
+st.title("XCqi i-turbo")
 
 @st.cache_resource
 def load_model():
     return pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
 
-try:
-    with st.spinner("AIモデル準備中..."):
-        pipe = load_model()
-except Exception as e:
-    st.error(f"エラー: {e}")
+pipe = load_model()
 
 def image_to_base64(img):
     buffered = BytesIO()
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
 
-uploaded_file = st.file_uploader("画像をアップロードしてね", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
     width, height = image.size
     aspect_ratio = height / width
 
-    with st.spinner("奥行きを計算中..."):
+    with st.spinner("XCqi is calculating."):
         result = pipe(image)
         depth_image = result["depth"].convert("L")
-
-    st.subheader("👇 指でなぞって動かしてみてね！")
 
     img_b64 = image_to_base64(image)
     depth_b64 = image_to_base64(depth_image)
@@ -75,7 +69,6 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // 隙間・裏地を自動補正するアドバンスド視差シェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -86,14 +79,11 @@ if uploaded_file is not None:
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
                     
-                    // しっかり立体的に動かす変位量
                     vec2 offset = u_mouse * (depth - 0.5) * 0.05;
                     vec2 uv = v_texCoord + offset;
 
-                    // もし隙間（背景露出）が起きたら周辺の色で自動的に裏地をサンプリング補完
                     float targetDepth = texture2D(u_depth, uv).r;
                     if (depth > targetDepth + 0.15) {{
-                        // 手前の物体が移動して奥が露出した時、手前のフチで覆うように補正
                         uv = v_texCoord + offset * (targetDepth / depth);
                     }}
 
