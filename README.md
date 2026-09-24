@@ -1,6 +1,6 @@
 # XQon i-turbo
 
-**A highly optimized, ultra-lightweight (<1GB) multilingual AI model.**
+**A highly optimized, ultra-lightweight (<1GB) AI model.**
 
 ## Overview
 
