@@ -37,7 +37,7 @@ if uploaded_file is not None:
     img_b64 = image_to_base64(image)
     depth_b64 = image_to_base64(depth_image)
 
-    display_height = int(600 * aspect_ratio)
+    display_height = int(750 * aspect_ratio) if aspect_ratio < 1.2 else 650
 
     html_code = f"""
     <!DOCTYPE html>
@@ -46,8 +46,24 @@ if uploaded_file is not None:
         <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            body {{ background-color: transparent; display: flex; justify-content: center; align-items: center; overflow: hidden; }}
-            canvas {{ width: 100%; height: auto; border-radius: 12px; touch-action: none; }}
+            body {{
+                background-color: transparent;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                overflow: hidden;
+                width: 100vw;
+                height: 100vh;
+            }}
+            canvas {{
+                max-width: 100%;
+                max-height: 100vh;
+                width: auto;
+                height: auto;
+                object-fit: contain;
+                border-radius: 12px;
+                touch-action: none;
+            }}
         </style>
     </head>
     <body>
@@ -174,4 +190,4 @@ if uploaded_file is not None:
     </html>
     """
 
-    components.html(html_code, height=display_height + 20)
+    components.html(html_code, height=display_height)
