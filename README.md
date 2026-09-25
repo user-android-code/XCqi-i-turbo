@@ -1,6 +1,6 @@
 # XCqi i-turbo
 
-| Parameter | Value |　|
+| Parameter | Value |
 | :--- | :--- |
 | **Parameters** | No |
 | **Model Size** | < 1.0 GB |
