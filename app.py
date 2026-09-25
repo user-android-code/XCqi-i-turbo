@@ -4,8 +4,7 @@ os.environ["STREAMLIT_SERVER_MAX_UPLOAD_SIZE"] = "200"
 
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageFilter
-import numpy as np
+from PIL import Image
 from transformers import pipeline
 import base64
 from io import BytesIO
@@ -14,39 +13,15 @@ st.set_page_config(page_title="XCqi", layout="wide")
 st.title("XCqi i-turbo")
 
 @st.cache_resource
-def load_depth_model():
+def load_model():
     return pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
 
-pipe = load_depth_model()
+pipe = load_model()
 
 def image_to_base64(img):
     buffered = BytesIO()
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
-
-def create_inpainted_background_and_fg(image, depth_image):
-    depth_array = np.array(depth_image)
-    threshold = np.percentile(depth_array, 50)
-    mask_array = (depth_array > threshold).astype(np.uint8) * 255
-    
-    mask = Image.fromarray(mask_array).resize(image.size, Image.BILINEAR)
-    
-    fg_array = np.array(image)
-    alpha = np.array(mask)
-    fg_rgba = np.dstack((fg_array, alpha))
-    fg_image = Image.fromarray(fg_rgba, mode="RGBA")
-    
-    bg_array = np.array(image).astype(np.float32)
-    inv_mask = (alpha < 128).astype(np.float32)[:, :, None]
-    
-    bg_base = bg_array * inv_mask
-    blurred_bg = Image.fromarray(bg_array.astype(np.uint8)).filter(ImageFilter.GaussianBlur(radius=25))
-    blurred_bg_array = np.array(blurred_bg).astype(np.float32)
-    
-    bg_final_array = bg_base + blurred_bg_array * (1.0 - inv_mask)
-    bg_image = Image.fromarray(np.clip(bg_final_array, 0, 255).astype(np.uint8))
-    
-    return fg_image, bg_image
 
 uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
@@ -58,11 +33,9 @@ if uploaded_file is not None:
     with st.spinner("XCqi is calculating."):
         result = pipe(image)
         depth_image = result["depth"].convert("L")
-        
-        fg_image, bg_image = create_inpainted_background_and_fg(image, depth_image)
 
-    fg_b64 = image_to_base64(fg_image)
-    bg_b64 = image_to_base64(bg_image)
+    img_b64 = image_to_base64(image)
+    depth_b64 = image_to_base64(depth_image)
 
     display_height = int(750 * aspect_ratio) if aspect_ratio < 1.2 else 650
 
@@ -97,15 +70,15 @@ if uploaded_file is not None:
     <body>
         <canvas id="glcanvas"></canvas>
         <script>
-            const fgSrc = "data:image/png;base64,{fg_b64}";
-            const bgSrc = "data:image/png;base64,{bg_b64}";
+            const imgSrc = "data:image/png;base64,{img_b64}";
+            const depthSrc = "data:image/png;base64,{depth_b64}";
 
             const canvas = document.getElementById("glcanvas");
             
             const gl = canvas.getContext("webgl", {{
                 preserveDrawingBuffer: false,
                 powerPreference: "high-performance",
-                alpha: true,
+                alpha: false,
                 desynchronized: true
             }});
 
@@ -119,22 +92,19 @@ if uploaded_file is not None:
                 }}
             `;
 
+            // 輪郭の破綻を防ぐため、変位量を自然な範囲(0.02)に微調整
             const fsSource = `
-                precision lowp float;
-                uniform sampler2D u_fg;
-                uniform sampler2D u_bg;
+                precision mediump float;
+                uniform sampler2D u_image;
+                uniform sampler2D u_depth;
                 uniform vec2 u_mouse;
                 varying vec2 v_texCoord;
 
                 void main() {{
-                    vec2 bgUV = clamp(v_texCoord - u_mouse * 0.01, 0.0, 1.0);
-                    vec4 bgColor = texture2D(u_bg, bgUV);
-
-                    vec2 fgUV = clamp(v_texCoord + u_mouse * 0.035, 0.0, 1.0);
-                    vec4 fgColor = texture2D(u_fg, fgUV);
-
-                    vec3 finalColor = mix(bgColor.rgb, fgColor.rgb, fgColor.a);
-                    gl_FragColor = vec4(finalColor, 1.0);
+                    float depth = texture2D(u_depth, v_texCoord).r;
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.02;
+                    vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
+                    gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
 
@@ -163,6 +133,7 @@ if uploaded_file is not None:
             gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
             const mouseLoc = gl.getUniformLocation(program, "u_mouse");
+            let mouseX = 0, mouseY = 0;
             let targetX = 0, targetY = 0;
 
             function updatePos(clientX, clientY) {{
@@ -194,14 +165,18 @@ if uploaded_file is not None:
                 img.src = url;
             }}
 
-            loadTexture(fgSrc, 0);
-            loadTexture(bgSrc, 1);
+            loadTexture(imgSrc, 0);
+            loadTexture(depthSrc, 1);
 
-            gl.uniform1i(gl.getUniformLocation(program, "u_fg"), 0);
-            gl.uniform1i(gl.getUniformLocation(program, "u_bg"), 1);
+            gl.uniform1i(gl.getUniformLocation(program, "u_image"), 0);
+            gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 1);
 
             function render() {{
-                gl.uniform2f(mouseLoc, targetX, -targetY);
+                // 適度なぬるぬる感で動きのブレを抑制
+                mouseX += (targetX - mouseX) * 0.2;
+                mouseY += (targetY - mouseY) * 0.2;
+                gl.uniform2f(mouseLoc, mouseX, -mouseY);
+
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
                 requestAnimationFrame(render);
             }}
