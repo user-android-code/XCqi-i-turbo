@@ -181,6 +181,10 @@ if uploaded_file is not None:
                 mouseY += (targetY - mouseY) * 0.1;
                 gl.uniform2f(mouseLoc, mouseX, -mouseY);
 
+                // 画面を毎フレーム消去して残像・二重重なりを完全防止
+                gl.clearColor(0.0, 0.0, 0.0, 0.0);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
                 requestAnimationFrame(render);
             }}
