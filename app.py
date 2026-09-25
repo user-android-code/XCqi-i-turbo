@@ -73,7 +73,12 @@ if uploaded_file is not None:
             const depthSrc = "data:image/png;base64,{depth_b64}";
 
             const canvas = document.getElementById("glcanvas");
-            const gl = canvas.getContext("webgl");
+            
+            const gl = canvas.getContext("webgl", {{
+                preserveDrawingBuffer: false,
+                powerPreference: "high-performance",
+                alpha: false
+            }});
 
             const vsSource = `
                 attribute vec2 a_position;
@@ -85,7 +90,6 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // ゴースト・二重表示を防止するクリーンシェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -95,11 +99,8 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    
-                    // 単純明快な深度ベースの変位（二重複製ロジックを完全排除）
                     vec2 offset = u_mouse * (depth - 0.5) * 0.035;
                     vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
-
                     gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
@@ -173,11 +174,11 @@ if uploaded_file is not None:
             gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 1);
 
             function render() {{
-                mouseX += (targetX - mouseX) * 0.1;
-                mouseY += (targetY - mouseY) * 0.1;
+                mouseX += (targetX - mouseX) * 0.15;
+                mouseY += (targetY - mouseY) * 0.15;
                 gl.uniform2f(mouseLoc, mouseX, -mouseY);
 
-                gl.clearColor(0.0, 0.0, 0.0, 0.0);
+                gl.clearColor(0.0, 0.0, 0.0, 1.0);
                 gl.clear(gl.COLOR_BUFFER_BIT);
 
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
