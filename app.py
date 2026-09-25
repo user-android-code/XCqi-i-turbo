@@ -63,6 +63,7 @@ if uploaded_file is not None:
                 object-fit: contain;
                 border-radius: 12px;
                 touch-action: none;
+                will-change: transform;
             }}
         </style>
     </head>
@@ -74,10 +75,13 @@ if uploaded_file is not None:
 
             const canvas = document.getElementById("glcanvas");
             
+            // 超低遅延・最高パフォーマンス設定
             const gl = canvas.getContext("webgl", {{
                 preserveDrawingBuffer: false,
                 powerPreference: "high-performance",
-                alpha: false
+                alpha: false,
+                desynchronized: true,
+                antialias: false
             }});
 
             const vsSource = `
@@ -85,13 +89,14 @@ if uploaded_file is not None:
                 varying vec2 v_texCoord;
                 void main() {{
                     gl_Position = vec4(a_position, 0.0, 1.0);
-                    v_texCoord = (a_position + 1.0) / 2.0;
+                    v_texCoord = (a_position + 1.0) * 0.5;
                     v_texCoord.y = 1.0 - v_texCoord.y;
                 }}
             `;
 
+            // GPU演算負荷を最小化した爆速フラグメントシェーダー
             const fsSource = `
-                precision mediump float;
+                precision lowp float;
                 uniform sampler2D u_image;
                 uniform sampler2D u_depth;
                 uniform vec2 u_mouse;
@@ -99,8 +104,7 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.035;
-                    vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
+                    vec2 uv = clamp(v_texCoord + u_mouse * (depth - 0.5) * 0.035, 0.0, 1.0);
                     gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
@@ -130,21 +134,15 @@ if uploaded_file is not None:
             gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
             const mouseLoc = gl.getUniformLocation(program, "u_mouse");
-            let mouseX = 0, mouseY = 0;
             let targetX = 0, targetY = 0;
 
             function updatePos(clientX, clientY) {{
                 const rect = canvas.getBoundingClientRect();
-                targetX = ((clientX - rect.left) / rect.width - 0.5) * 2;
-                targetY = ((clientY - rect.top) / rect.height - 0.5) * 2;
+                targetX = ((clientX - rect.left) / rect.width - 0.5) * 2.0;
+                targetY = ((clientY - rect.top) / rect.height - 0.5) * 2.0;
             }}
 
-            window.addEventListener("mousemove", (e) => updatePos(e.clientX, e.clientY));
-            window.addEventListener("touchmove", (e) => {{
-                if(e.touches.length > 0) {{
-                    updatePos(e.touches[0].clientX, e.touches[0].clientY);
-                }}
-            }}, {{passive: true}});
+            window.addEventListener("pointermove", (e) => updatePos(e.clientX, e.clientY), {{passive: true}});
 
             function loadTexture(url, index) {{
                 const texture = gl.createTexture();
@@ -154,9 +152,17 @@ if uploaded_file is not None:
 
                 const img = new Image();
                 img.onload = () => {{
-                    canvas.width = img.width;
-                    canvas.height = img.height;
-                    gl.viewport(0, 0, img.width, img.height);
+                    // 解像度を適切にスケールして過負荷を回避
+                    const maxDim = 1024;
+                    let w = img.width;
+                    let h = img.height;
+                    if (w > maxDim || h > maxDim) {{
+                        if (w > h) {{ h = Math.round(h * maxDim / w); w = maxDim; }}
+                        else {{ w = Math.round(w * maxDim / h); h = maxDim; }}
+                    }}
+                    canvas.width = w;
+                    canvas.height = h;
+                    gl.viewport(0, 0, w, h);
                     gl.activeTexture(gl.TEXTURE0 + index);
                     gl.bindTexture(gl.TEXTURE_2D, texture);
                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
@@ -174,13 +180,8 @@ if uploaded_file is not None:
             gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 1);
 
             function render() {{
-                mouseX += (targetX - mouseX) * 0.15;
-                mouseY += (targetY - mouseY) * 0.15;
-                gl.uniform2f(mouseLoc, mouseX, -mouseY);
-
-                gl.clearColor(0.0, 0.0, 0.0, 1.0);
-                gl.clear(gl.COLOR_BUFFER_BIT);
-
+                // 追従遅延ゼロ（即時反映）
+                gl.uniform2f(mouseLoc, targetX, -targetY);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
                 requestAnimationFrame(render);
             }}
