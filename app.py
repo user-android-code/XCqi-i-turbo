@@ -92,7 +92,6 @@ if uploaded_file is not None:
                 }}
             `;
 
-            // 輪郭の破綻を防ぐため、変位量を自然な範囲(0.02)に微調整
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -102,7 +101,7 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.02;
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.045;
                     vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
                     gl_FragColor = texture2D(u_image, uv);
                 }}
@@ -172,9 +171,8 @@ if uploaded_file is not None:
             gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 1);
 
             function render() {{
-                // 適度なぬるぬる感で動きのブレを抑制
-                mouseX += (targetX - mouseX) * 0.2;
-                mouseY += (targetY - mouseY) * 0.2;
+                mouseX += (targetX - mouseX) * 0.15;
+                mouseY += (targetY - mouseY) * 0.15;
                 gl.uniform2f(mouseLoc, mouseX, -mouseY);
 
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
