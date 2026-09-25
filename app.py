@@ -85,6 +85,7 @@ if uploaded_file is not None:
                 }}
             `;
 
+            // ゴースト・二重表示を防止するクリーンシェーダー
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
@@ -95,16 +96,11 @@ if uploaded_file is not None:
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
                     
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.05;
-                    vec2 uv = v_texCoord + offset;
+                    // 単純明快な深度ベースの変位（二重複製ロジックを完全排除）
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.035;
+                    vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
 
-                    float targetDepth = texture2D(u_depth, uv).r;
-                    if (depth > targetDepth + 0.15) {{
-                        uv = v_texCoord + offset * (targetDepth / depth);
-                    }}
-
-                    vec2 finalUV = clamp(uv, 0.001, 0.999);
-                    gl_FragColor = texture2D(u_image, finalUV);
+                    gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
 
@@ -181,7 +177,6 @@ if uploaded_file is not None:
                 mouseY += (targetY - mouseY) * 0.1;
                 gl.uniform2f(mouseLoc, mouseX, -mouseY);
 
-                // 画面を毎フレーム消去して残像・二重重なりを完全防止
                 gl.clearColor(0.0, 0.0, 0.0, 0.0);
                 gl.clear(gl.COLOR_BUFFER_BIT);
 
