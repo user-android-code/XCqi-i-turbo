@@ -24,17 +24,17 @@ def image_to_base64(img):
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
 
-def remove_background_to_white(image, depth_image):
+def create_white_erased_bg(image, depth_image):
     img_array = np.array(image)
     depth_array = np.array(depth_image)
     
-    threshold = np.percentile(depth_array, 40)
-    mask = depth_array > threshold
+    threshold = np.percentile(depth_array, 45)
+    foreground_mask = depth_array > threshold
     
-    white_bg_img = np.full_like(img_array, 255)
-    white_bg_img[mask] = img_array[mask]
+    bg_array = img_array.copy()
+    bg_array[foreground_mask] = [255, 255, 255]
     
-    return Image.fromarray(white_bg_img)
+    return Image.fromarray(bg_array)
 
 uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
@@ -47,9 +47,10 @@ if uploaded_file is not None:
         result = pipe(image)
         depth_image = result["depth"].convert("L")
         
-        processed_image = remove_background_to_white(image, depth_image)
+        bg_image = create_white_erased_bg(image, depth_image)
 
-    img_b64 = image_to_base64(processed_image)
+    img_b64 = image_to_base64(image)
+    bg_b64 = image_to_base64(bg_image)
     depth_b64 = image_to_base64(depth_image)
 
     display_height = int(750 * aspect_ratio) if aspect_ratio < 1.2 else 650
@@ -62,7 +63,7 @@ if uploaded_file is not None:
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
-                background-color: #ffffff;
+                background-color: transparent;
                 display: flex;
                 justify-content: center;
                 align-items: center;
@@ -86,6 +87,7 @@ if uploaded_file is not None:
         <canvas id="glcanvas"></canvas>
         <script>
             const imgSrc = "data:image/png;base64,{img_b64}";
+            const bgSrc = "data:image/png;base64,{bg_b64}";
             const depthSrc = "data:image/png;base64,{depth_b64}";
 
             const canvas = document.getElementById("glcanvas");
@@ -110,15 +112,26 @@ if uploaded_file is not None:
             const fsSource = `
                 precision mediump float;
                 uniform sampler2D u_image;
+                uniform sampler2D u_bg;
                 uniform sampler2D u_depth;
                 uniform vec2 u_mouse;
                 varying vec2 v_texCoord;
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.045;
-                    vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
-                    gl_FragColor = texture2D(u_image, uv);
+                    
+                    vec2 bgUV = clamp(v_texCoord - u_mouse * 0.01, 0.001, 0.999);
+                    vec4 bgColor = texture2D(u_bg, bgUV);
+
+                    vec2 fgUV = clamp(v_texCoord + u_mouse * 0.035, 0.001, 0.999);
+                    vec4 fgColor = texture2D(u_image, fgUV);
+                    float fgDepth = texture2D(u_depth, fgUV).r;
+
+                    if (fgDepth > 0.45) {{
+                        gl_FragColor = fgColor;
+                    }} else {{
+                        gl_FragColor = bgColor;
+                    }}
                 }}
             `;
 
@@ -180,10 +193,12 @@ if uploaded_file is not None:
             }}
 
             loadTexture(imgSrc, 0);
-            loadTexture(depthSrc, 1);
+            loadTexture(bgSrc, 1);
+            loadTexture(depthSrc, 2);
 
             gl.uniform1i(gl.getUniformLocation(program, "u_image"), 0);
-            gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 1);
+            gl.uniform1i(gl.getUniformLocation(program, "u_bg"), 1);
+            gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 2);
 
             function render() {{
                 mouseX += (targetX - mouseX) * 0.15;
