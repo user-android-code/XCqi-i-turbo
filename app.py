@@ -16,7 +16,6 @@ st.caption("1枚の2D画像(256x256)から新しい視点の空間シーンを�
 
 MODEL_ID = "kyutai/ovie"
 
-# 画像前処理
 transform = T.Compose([
     T.ToTensor(),
     T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
@@ -24,7 +23,6 @@ transform = T.Compose([
 
 @st.cache_resource
 def load_ovie_model():
-    # Hugging Faceのリポジトリから自動でモデル構造と重みを読み込み
     model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True)
     model.eval()
     return model
@@ -64,12 +62,9 @@ if uploaded_file:
                 camera_pose = torch.tensor([[yaw, pitch]], dtype=torch.float32)
                 
                 with torch.no_grad():
-                    # モデルのフォワード実行
-                    # オブジェクトの呼び出し（__call__ / forward）を試行
                     try:
                         outputs = model(img_tensor, camera_pose)
                     except TypeError:
-                        # 引数の受け渡し形式が異なる場合のフォールバック
                         outputs = model(pixel_values=img_tensor, pose=camera_pose)
                     
                     if hasattr(outputs, "logits"):
