@@ -101,19 +101,8 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.045;
+                    vec2 offset = u_mouse * (depth - 0.4) * 0.028;
                     vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
-
-                    if (depth > 0.6) {{
-                        vec2 bgDir = normalize(u_mouse + vec2(0.0001));
-                        vec2 bgSearchUV = clamp(v_texCoord - bgDir * 0.03, 0.001, 0.999);
-                        float bgDepth = texture2D(u_depth, bgSearchUV).r;
-                        if (bgDepth < 0.5) {{
-                            uv = mix(uv, bgSearchUV, (depth - 0.6) * 2.0);
-                        }}
-                    }}
-
                     gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
