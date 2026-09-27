@@ -6,6 +6,9 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 import numpy as np
+import cv2
+import torch
+import gc
 from transformers import pipeline
 import base64
 from io import BytesIO
@@ -14,15 +17,32 @@ st.set_page_config(page_title="XCqi", layout="wide")
 st.title("XCqi i-turbo")
 
 @st.cache_resource
-def load_model():
-    return pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
+def load_models():
+    # 1. 深度推定モデル (Depth-Anything-V2)
+    depth_pipe = pipeline(task="depth-estimation", model="depth-anything/Depth-Anything-V2-Small-hf")
+    # 2. 軽量背景削除モデル (RMBG-1.4: 約170MB)
+    rmbg_pipe = pipeline(task="image-segmentation", model="briaai/RMBG-1.4", trust_remote_code=True)
+    return depth_pipe, rmbg_pipe
 
-pipe = load_model()
+depth_pipe, rmbg_pipe = load_models()
 
 def image_to_base64(img):
     buffered = BytesIO()
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
+
+def create_background_inpaint(original_img, mask_img):
+    """前景領域（マスク）をCV2のInpaintingで簡易穴埋めして背景を作る"""
+    img_np = np.array(original_img)
+    mask_np = np.array(mask_img.convert("L"))
+    
+    # マスク領域を少し膨張させて境界のゴミを削る
+    kernel = np.ones((15, 15), np.uint8)
+    dilated_mask = cv2.dilate(mask_np, kernel, iterations=1)
+    
+    # Teleaアルゴリズムでインペイント（超高速＆メモリ消費ほぼゼロ）
+    inpainted_np = cv2.inpaint(img_np, dilated_mask, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
+    return Image.fromarray(inpainted_np)
 
 uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
@@ -31,11 +51,24 @@ if uploaded_file is not None:
     width, height = image.size
     aspect_ratio = height / width
 
-    with st.spinner("XCqi is calculating."):
-        result = pipe(image)
-        depth_image = result["depth"].convert("L")
+    with st.spinner("XCqi is calculating (Separating Layers)..."):
+        with torch.no_grad():
+            # 深度マップ生成
+            depth_result = depth_pipe(image)
+            depth_image = depth_result["depth"].convert("L")
+            
+            # 前景切り抜き (RGBA)
+            fg_image = rmbg_pipe(image)
+            
+            # アルファチャンネルからマスクを抽出して背景を補完
+            alpha_mask = fg_image.split()[-1]
+            bg_image = create_background_inpaint(image, alpha_mask)
+            
+            # ガベージコレクションでメモリ即時解放
+            gc.collect()
 
-    img_b64 = image_to_base64(image)
+    fg_b64 = image_to_base64(fg_image)
+    bg_b64 = image_to_base64(bg_image)
     depth_b64 = image_to_base64(depth_image)
 
     display_height = int(750 * aspect_ratio) if aspect_ratio < 1.2 else 650
@@ -71,7 +104,8 @@ if uploaded_file is not None:
     <body>
         <canvas id="glcanvas"></canvas>
         <script>
-            const imgSrc = "data:image/png;base64,{img_b64}";
+            const fgSrc = "data:image/png;base64,{fg_b64}";
+            const bgSrc = "data:image/png;base64,{bg_b64}";
             const depthSrc = "data:image/png;base64,{depth_b64}";
 
             const canvas = document.getElementById("glcanvas");
@@ -79,7 +113,7 @@ if uploaded_file is not None:
             const gl = canvas.getContext("webgl", {{
                 preserveDrawingBuffer: false,
                 powerPreference: "high-performance",
-                alpha: false,
+                alpha: true,
                 desynchronized: true
             }});
 
@@ -93,9 +127,11 @@ if uploaded_file is not None:
                 }}
             `;
 
+            // 手前（FG）と背景（BG）を合成し、背景のゴーストを防ぐシェーダー
             const fsSource = `
                 precision mediump float;
-                uniform sampler2D u_image;
+                uniform sampler2D u_fg;
+                uniform sampler2D u_bg;
                 uniform sampler2D u_depth;
                 uniform vec2 u_mouse;
                 varying vec2 v_texCoord;
@@ -103,19 +139,19 @@ if uploaded_file is not None:
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
 
-                    // 1. 背景領域の判定（深度が一定値以下を背景とする）
-                    float isBackground = 1.0 - smoothstep(0.4, 0.6, depth);
+                    // 背景は極小のオフセットで安定させる
+                    vec2 bgOffset = u_mouse * -0.008;
+                    vec2 bgUV = clamp(v_texCoord + bgOffset, 0.001, 0.999);
+                    vec4 bgColor = texture2D(u_bg, bgUV);
 
-                    // 2. 背景領域のみUV座標を中心に寄せて縮小サンプリング（15%縮小）
-                    vec2 center = vec2(0.5, 0.5);
-                    vec2 shrinkUV = mix(v_texCoord, center, isBackground * 0.15);
+                    // 前景は深度に連動して大きく移動
+                    vec2 fgOffset = u_mouse * (depth - 0.3) * 0.05;
+                    vec2 fgUV = clamp(v_texCoord + fgOffset, 0.001, 0.999);
+                    vec4 fgColor = texture2D(u_fg, fgUV);
 
-                    // 3. 視差効果のオフセット計算
-                    vec2 offset = u_mouse * (depth - 0.5) * 0.045;
-
-                    // 4. 最終UV座標のクランプ処理
-                    vec2 uv = clamp(shrinkUV + offset, 0.001, 0.999);
-                    gl_FragColor = texture2D(u_image, uv);
+                    // アルファブレンディング（前景の手前に背景を透過合成）
+                    vec3 finalColor = mix(bgColor.rgb, fgColor.rgb, fgColor.a);
+                    gl_FragColor = vec4(finalColor, 1.0);
                 }}
             `;
 
@@ -159,7 +195,7 @@ if uploaded_file is not None:
                 const texture = gl.createTexture();
                 gl.activeTexture(gl.TEXTURE0 + index);
                 gl.bindTexture(gl.TEXTURE_2D, texture);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,0]));
 
                 const img = new Image();
                 img.onload = () => {{
@@ -176,11 +212,13 @@ if uploaded_file is not None:
                 img.src = url;
             }}
 
-            loadTexture(imgSrc, 0);
-            loadTexture(depthSrc, 1);
+            loadTexture(fgSrc, 0);
+            loadTexture(bgSrc, 1);
+            loadTexture(depthSrc, 2);
 
-            gl.uniform1i(gl.getUniformLocation(program, "u_image"), 0);
-            gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 1);
+            gl.uniform1i(gl.getUniformLocation(program, "u_fg"), 0);
+            gl.uniform1i(gl.getUniformLocation(program, "u_bg"), 1);
+            gl.uniform1i(gl.getUniformLocation(program, "u_depth"), 2);
 
             function render() {{
                 mouseX += (targetX - mouseX) * 0.15;
