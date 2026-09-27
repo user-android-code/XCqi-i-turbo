@@ -1,6 +1,8 @@
 streamlit
 torch
 torchvision
-huggingface_hub
+diffusers
+transformers
+accelerate
 pillow
 numpy
