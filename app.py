@@ -3,8 +3,7 @@ import torch
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
-import torchvision.transforms as T
-from huggingface_hub import hf_hub_download
+from diffusers import DiffusionPipeline
 
 st.set_page_config(
     page_title="2.5D Spatial Scene Generator",
@@ -14,31 +13,21 @@ st.set_page_config(
 st.title("2.5D Spatial Scene Generator (OVIE)")
 st.caption("1枚の2D画像(256x256)から新しい視点の空間シーンを生成するよ")
 
-REPO_ID = "kyutai/ovie"
-
-transform = T.Compose([
-    T.ToTensor(),
-    T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-])
+MODEL_ID = "kyutai/ovie"
 
 @st.cache_resource
-def load_ovie_model():
-    # Hugging Face Hubから直接モデルの重みファイルを指定してダウンロード
-    # ※ リポジトリ内の主要なモデルファイル名（例: model.pt や pytorch_model.bin など）を指定
-    try:
-        model_path = hf_hub_download(repo_id=REPO_ID, filename="model.pt")
-    except Exception:
-        # 代替ファイル名で試行
-        model_path = hf_hub_download(repo_id=REPO_ID, filename="pytorch_model.bin")
-        
-    model = torch.load(model_path, map_location="cpu")
-    if hasattr(model, "eval"):
-        model.eval()
-    return model
+def load_ovie_pipeline():
+    # Diffusersのパイプラインとしてモデル全体をロード
+    pipe = DiffusionPipeline.from_pretrained(
+        MODEL_ID,
+        torch_dtype=torch.float32,
+        trust_remote_code=True
+    )
+    return pipe
 
 try:
     with st.spinner("モデルをロード中..."):
-        model = load_ovie_model()
+        pipe = load_ovie_pipeline()
     st.sidebar.success("モデルのロード完了！")
 except Exception as e:
     st.sidebar.error(f"モデルのロードに失敗したよ: {e}")
@@ -67,35 +56,23 @@ if uploaded_file:
     if st.button("2.5D視点を生成！", type="primary"):
         with st.spinner("新しい視点を生成中..."):
             try:
-                img_tensor = transform(img_256).unsqueeze(0)
-                camera_pose = torch.tensor([[yaw, pitch]], dtype=torch.float32)
+                camera_pose = [yaw, pitch]
                 
                 with torch.no_grad():
-                    # 関数の形式（Callableオブジェクトまたは通常のモデル推論）に応じて呼び出し
-                    if callable(model):
-                        outputs = model(img_tensor, camera_pose)
+                    # Diffusers パイプライン経由での推論
+                    # (モデルの仕様に応じて image / pose / camera_pose 等の引数を渡す)
+                    result = pipe(
+                        image=img_256,
+                        pose=camera_pose
+                    )
+                    
+                    # 出力画像の取り出し
+                    if hasattr(result, "images"):
+                        generated_img = result.images[0]
+                    elif isinstance(result, list):
+                        generated_img = result[0]
                     else:
-                        outputs = model(pixel_values=img_tensor, pose=camera_pose)
-                    
-                    if hasattr(outputs, "logits"):
-                        output_tensor = outputs.logits
-                    elif isinstance(outputs, torch.Tensor):
-                        output_tensor = outputs
-                    else:
-                        output_tensor = outputs[0]
-                    
-                    out_img_np = output_tensor.squeeze(0).cpu().numpy()
-                    if out_img_np.shape[0] in [1, 3]:
-                        out_img_np = np.transpose(out_img_np, (1, 2, 0))
-                    
-                    if out_img_np.min() < 0:
-                        out_img_np = (out_img_np + 1.0) / 2.0
-                    if out_img_np.max() <= 1.0:
-                        out_img_np = (out_img_np * 255).clip(0, 255).astype(np.uint8)
-                    else:
-                        out_img_np = out_img_np.clip(0, 255).astype(np.uint8)
-                    
-                    generated_img = Image.fromarray(out_img_np)
+                        generated_img = result
 
                 with col2:
                     st.subheader("生成された2.5D視点")
