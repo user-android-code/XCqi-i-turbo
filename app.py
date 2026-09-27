@@ -1,45 +1,90 @@
-import streamlit as st
-import torch
-from PIL import Image
-from PIL import ImageOps
 import gc
+import torch
+import numpy as np
+import streamlit as st
+from PIL import Image, ImageOps
+from transformers import AutoModel, AutoImageProcessor
 
-# 1. モデル読み込み（軽量化なし、そのままの精度でロード）
-@st.cache_resource
-def load_model():
-    # Kyutai/OVIEのモデルロード処理（PyTorch / Transformers）
-    # ※ 公式の指定クラスに合わせてインポート・呼び出し
-    model = torch.hub.load(...)  # または AutoModel.from_pretrained("kyutai/ovie")
-    model.eval()
-    return model
+st.set_page_config(
+    page_title="2.5D Spatial Scene Generator",
+    layout="centered"
+)
 
 st.title("2.5D Spatial Scene Generator (OVIE)")
+st.caption("1枚の2D画像(256x256)から新しい視点の空間シーンを生成するよ")
 
-model = load_model()
+MODEL_ID = "kyutai/ovie"
 
-uploaded_file = st.file_uploader("画像をアップロード（自動で256x256に調整されるよ）", type=["png", "jpg", "jpeg"])
+@st.cache_resource
+def load_ovie_pipeline():
+    processor = AutoImageProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+    model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True)
+    model.eval()
+    return processor, model
+
+try:
+    with st.spinner("モデルをロード中..."):
+        processor, model = load_ovie_pipeline()
+    st.sidebar.success("モデルのロード完了！")
+except Exception as e:
+    st.sidebar.error(f"モデルのロードに失敗したよ: {e}")
+    st.stop()
+
+uploaded_file = st.file_uploader("2D画像をアップロードしてね", type=["png", "jpg", "jpeg"])
 
 if uploaded_file:
     raw_img = Image.open(uploaded_file).convert("RGB")
-    
-    # 256x256 にアスペクト比を保ちつつ中央クロップ＆リサイズ
     img_256 = ImageOps.fit(raw_img, (256, 256), Image.Resampling.LANCZOS)
     
     col1, col2 = st.columns(2)
     with col1:
-        st.image(img_256, caption="入力画像 (256x256)", use_column_width=True)
+        st.subheader("入力画像 (256x256)")
+        st.image(img_256, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("カメラアングル調整")
     
-    # カメラパラメータの操作
-    st.subheader("空間アングル設定")
-    yaw = st.slider("左右アングル (Yaw)", -20.0, 20.0, 0.0, step=1.0)
-    pitch = st.slider("上下アングル (Pitch)", -10.0, 10.0, 0.0, step=1.0)
-    
-    if st.button("2.5D視点を生成"):
-        with st.spinner("OVIEで推論中..."):
-            # OVIEに 256x256 画像とカメラポーズを入力
-            # output_tensor = model(img_256, yaw=yaw, pitch=pitch)
-            # output_img = tensor_to_pil(output_tensor)
-            
-            with col2:
-                # st.image(output_img, caption="生成された空間視点", use_column_width=True)
-                st.success("できた！")
+    col_yaw, col_pitch = st.columns(2)
+    with col_yaw:
+        yaw = st.slider("左右アングル (Yaw)", -20.0, 20.0, 0.0, step=1.0)
+    with col_pitch:
+        pitch = st.slider("上下アングル (Pitch)", -10.0, 10.0, 0.0, step=1.0)
+
+    if st.button("2.5D視点を生成！", type="primary"):
+        with st.spinner("新しい視点を生成中..."):
+            try:
+                inputs = processor(images=img_256, return_tensors="pt")
+                camera_pose = torch.tensor([[yaw, pitch]], dtype=torch.float32)
+                
+                with torch.no_grad():
+                    outputs = model(**inputs, pose=camera_pose)
+                    
+                    if hasattr(outputs, "logits"):
+                        output_tensor = outputs.logits
+                    elif isinstance(outputs, torch.Tensor):
+                        output_tensor = outputs
+                    else:
+                        output_tensor = outputs[0]
+                    
+                    out_img_np = output_tensor.squeeze(0).cpu().numpy()
+                    if out_img_np.shape[0] in [1, 3]:
+                        out_img_np = np.transpose(out_img_np, (1, 2, 0))
+                    
+                    if out_img_np.max() <= 1.0:
+                        out_img_np = (out_img_np * 255).astype(np.uint8)
+                    else:
+                        out_img_np = out_img_np.astype(np.uint8)
+                    
+                    generated_img = Image.fromarray(out_img_np)
+
+                with col2:
+                    st.subheader("生成された2.5D視点")
+                    st.image(generated_img, use_container_width=True)
+                
+                st.success("生成完了！")
+
+            except Exception as e:
+                st.error(f"推論中にエラーが発生したよ: {e}")
+
+            finally:
+                gc.collect()
