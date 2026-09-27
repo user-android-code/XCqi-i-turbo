@@ -102,8 +102,19 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
+
+                    // 1. 背景領域の判定（深度が一定値以下を背景とする）
+                    float isBackground = 1.0 - smoothstep(0.4, 0.6, depth);
+
+                    // 2. 背景領域のみUV座標を中心に寄せて縮小サンプリング（15%縮小）
+                    vec2 center = vec2(0.5, 0.5);
+                    vec2 shrinkUV = mix(v_texCoord, center, isBackground * 0.15);
+
+                    // 3. 視差効果のオフセット計算
                     vec2 offset = u_mouse * (depth - 0.5) * 0.045;
-                    vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
+
+                    // 4. 最終UV座標のクランプ処理
+                    vec2 uv = clamp(shrinkUV + offset, 0.001, 0.999);
                     gl_FragColor = texture2D(u_image, uv);
                 }}
             `;
