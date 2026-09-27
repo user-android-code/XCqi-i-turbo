@@ -24,7 +24,7 @@ def image_to_base64(img):
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
 
-def create_white_erased_bg(image, depth_image):
+def create_edge_extended_bg(image, depth_image):
     img_array = np.array(image)
     depth_array = np.array(depth_image)
     
@@ -32,8 +32,24 @@ def create_white_erased_bg(image, depth_image):
     foreground_mask = depth_array > threshold
     
     bg_array = img_array.copy()
-    bg_array[foreground_mask] = [255, 255, 255]
     
+    h, w, c = bg_array.shape
+    for y in range(h):
+        last_valid_pixel = None
+        for x in range(w):
+            if not foreground_mask[y, x]:
+                last_valid_pixel = bg_array[y, x]
+            elif last_valid_pixel is not None:
+                bg_array[y, x] = last_valid_pixel
+                
+        last_valid_pixel = None
+        for x in range(w - 1, -1, -1):
+            if not foreground_mask[y, x]:
+                last_valid_pixel = bg_array[y, x]
+            elif last_valid_pixel is not None:
+                if foreground_mask[y, x]:
+                    bg_array[y, x] = (bg_array[y, x].astype(np.uint16) + last_valid_pixel.astype(np.uint16)) // 2
+
     return Image.fromarray(bg_array)
 
 uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
@@ -47,7 +63,7 @@ if uploaded_file is not None:
         result = pipe(image)
         depth_image = result["depth"].convert("L")
         
-        bg_image = create_white_erased_bg(image, depth_image)
+        bg_image = create_edge_extended_bg(image, depth_image)
 
     img_b64 = image_to_base64(image)
     bg_b64 = image_to_base64(bg_image)
@@ -118,9 +134,7 @@ if uploaded_file is not None:
                 varying vec2 v_texCoord;
 
                 void main() {{
-                    float depth = texture2D(u_depth, v_texCoord).r;
-                    
-                    vec2 bgUV = clamp(v_texCoord - u_mouse * 0.01, 0.001, 0.999);
+                    vec2 bgUV = clamp(v_texCoord - u_mouse * 0.012, 0.001, 0.999);
                     vec4 bgColor = texture2D(u_bg, bgUV);
 
                     vec2 fgUV = clamp(v_texCoord + u_mouse * 0.035, 0.001, 0.999);
