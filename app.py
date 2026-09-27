@@ -4,7 +4,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
 import torchvision.transforms as T
-from transformers import AutoModel
+from huggingface_hub import PyTorchModelHubMixin
 
 st.set_page_config(
     page_title="2.5D Spatial Scene Generator",
@@ -16,14 +16,25 @@ st.caption("1枚の2D画像(256x256)から新しい視点の空間シーンを�
 
 MODEL_ID = "kyutai/ovie"
 
+# 前処理
 transform = T.Compose([
     T.ToTensor(),
     T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
+# PyTorchModelHubMixin 経由でクラスを動的定義してロード
+class DynamicOVIEModel(torch.nn.Module, PyTorchModelHubMixin):
+    def __init__(self, **kwargs):
+        super().__init__()
+
+    # 万が一 forward が未定義でロードされた場合のフォールバック
+    def forward(self, *args, **kwargs):
+        return super().forward(*args, **kwargs)
+
 @st.cache_resource
 def load_ovie_model():
-    model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True)
+    # huggingface_hub の Mixin を使って直接ロード
+    model = DynamicOVIEModel.from_pretrained(MODEL_ID)
     model.eval()
     return model
 
@@ -62,10 +73,8 @@ if uploaded_file:
                 camera_pose = torch.tensor([[yaw, pitch]], dtype=torch.float32)
                 
                 with torch.no_grad():
-                    try:
-                        outputs = model(img_tensor, camera_pose)
-                    except TypeError:
-                        outputs = model(pixel_values=img_tensor, pose=camera_pose)
+                    # 推論実行
+                    outputs = model(img_tensor, camera_pose)
                     
                     if hasattr(outputs, "logits"):
                         output_tensor = outputs.logits
