@@ -5,6 +5,7 @@ os.environ["STREAMLIT_SERVER_MAX_UPLOAD_SIZE"] = "200"
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
+import numpy as np
 from transformers import pipeline
 import base64
 from io import BytesIO
@@ -23,6 +24,18 @@ def image_to_base64(img):
     img.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode()
 
+def remove_background_to_white(image, depth_image):
+    img_array = np.array(image)
+    depth_array = np.array(depth_image)
+    
+    threshold = np.percentile(depth_array, 40)
+    mask = depth_array > threshold
+    
+    white_bg_img = np.full_like(img_array, 255)
+    white_bg_img[mask] = img_array[mask]
+    
+    return Image.fromarray(white_bg_img)
+
 uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"], label_visibility="collapsed")
 
 if uploaded_file is not None:
@@ -33,8 +46,10 @@ if uploaded_file is not None:
     with st.spinner("XCqi is calculating."):
         result = pipe(image)
         depth_image = result["depth"].convert("L")
+        
+        processed_image = remove_background_to_white(image, depth_image)
 
-    img_b64 = image_to_base64(image)
+    img_b64 = image_to_base64(processed_image)
     depth_b64 = image_to_base64(depth_image)
 
     display_height = int(750 * aspect_ratio) if aspect_ratio < 1.2 else 650
@@ -47,7 +62,7 @@ if uploaded_file is not None:
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
-                background-color: transparent;
+                background-color: #ffffff;
                 display: flex;
                 justify-content: center;
                 align-items: center;
@@ -101,7 +116,7 @@ if uploaded_file is not None:
 
                 void main() {{
                     float depth = texture2D(u_depth, v_texCoord).r;
-                    vec2 offset = u_mouse * (depth - 0.4) * 0.028;
+                    vec2 offset = u_mouse * (depth - 0.5) * 0.045;
                     vec2 uv = clamp(v_texCoord + offset, 0.001, 0.999);
                     gl_FragColor = texture2D(u_image, uv);
                 }}
