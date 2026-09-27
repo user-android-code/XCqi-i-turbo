@@ -4,7 +4,7 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
 import torchvision.transforms as T
-from transformers import AutoModel
+from huggingface_hub import hf_hub_download
 
 st.set_page_config(
     page_title="2.5D Spatial Scene Generator",
@@ -14,18 +14,26 @@ st.set_page_config(
 st.title("2.5D Spatial Scene Generator (OVIE)")
 st.caption("1枚の2D画像(256x256)から新しい視点の空間シーンを生成するよ")
 
-MODEL_ID = "kyutai/ovie"
+REPO_ID = "kyutai/ovie"
 
-# 前処理パイプライン（PIL Image -> Tensor 変換）
 transform = T.Compose([
-    T.ToTensor(),  # [0, 255] -> [0.0, 1.0] かつ [H, W, C] -> [C, H, W]
-    T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # [-1, 1]に正規化
+    T.ToTensor(),
+    T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
 @st.cache_resource
 def load_ovie_model():
-    model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True)
-    model.eval()
+    # Hugging Face Hubから直接モデルの重みファイルを指定してダウンロード
+    # ※ リポジトリ内の主要なモデルファイル名（例: model.pt や pytorch_model.bin など）を指定
+    try:
+        model_path = hf_hub_download(repo_id=REPO_ID, filename="model.pt")
+    except Exception:
+        # 代替ファイル名で試行
+        model_path = hf_hub_download(repo_id=REPO_ID, filename="pytorch_model.bin")
+        
+    model = torch.load(model_path, map_location="cpu")
+    if hasattr(model, "eval"):
+        model.eval()
     return model
 
 try:
@@ -59,13 +67,15 @@ if uploaded_file:
     if st.button("2.5D視点を生成！", type="primary"):
         with st.spinner("新しい視点を生成中..."):
             try:
-                # 前処理を自前でテンソル化 (バッチ次元追加: [1, 3, 256, 256])
                 img_tensor = transform(img_256).unsqueeze(0)
                 camera_pose = torch.tensor([[yaw, pitch]], dtype=torch.float32)
                 
                 with torch.no_grad():
-                    # モデルに直接テンソルを入力
-                    outputs = model(pixel_values=img_tensor, pose=camera_pose)
+                    # 関数の形式（Callableオブジェクトまたは通常のモデル推論）に応じて呼び出し
+                    if callable(model):
+                        outputs = model(img_tensor, camera_pose)
+                    else:
+                        outputs = model(pixel_values=img_tensor, pose=camera_pose)
                     
                     if hasattr(outputs, "logits"):
                         output_tensor = outputs.logits
@@ -74,12 +84,10 @@ if uploaded_file:
                     else:
                         output_tensor = outputs[0]
                     
-                    # テンソルを画像用フォーマットに戻す
                     out_img_np = output_tensor.squeeze(0).cpu().numpy()
                     if out_img_np.shape[0] in [1, 3]:
                         out_img_np = np.transpose(out_img_np, (1, 2, 0))
                     
-                    # [-1, 1] や [0, 1] を [0, 255] に戻す処理
                     if out_img_np.min() < 0:
                         out_img_np = (out_img_np + 1.0) / 2.0
                     if out_img_np.max() <= 1.0:
