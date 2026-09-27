@@ -3,7 +3,8 @@ import torch
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
-from transformers import AutoModel, AutoImageProcessor
+import torchvision.transforms as T
+from transformers import AutoModel
 
 st.set_page_config(
     page_title="2.5D Spatial Scene Generator",
@@ -15,16 +16,21 @@ st.caption("1枚の2D画像(256x256)から新しい視点の空間シーンを�
 
 MODEL_ID = "kyutai/ovie"
 
+# 前処理パイプライン（PIL Image -> Tensor 変換）
+transform = T.Compose([
+    T.ToTensor(),  # [0, 255] -> [0.0, 1.0] かつ [H, W, C] -> [C, H, W]
+    T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # [-1, 1]に正規化
+])
+
 @st.cache_resource
-def load_ovie_pipeline():
-    processor = AutoImageProcessor.from_pretrained(MODEL_ID, trust_remote_code=True)
+def load_ovie_model():
     model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True)
     model.eval()
-    return processor, model
+    return model
 
 try:
     with st.spinner("モデルをロード中..."):
-        processor, model = load_ovie_pipeline()
+        model = load_ovie_model()
     st.sidebar.success("モデルのロード完了！")
 except Exception as e:
     st.sidebar.error(f"モデルのロードに失敗したよ: {e}")
@@ -53,11 +59,13 @@ if uploaded_file:
     if st.button("2.5D視点を生成！", type="primary"):
         with st.spinner("新しい視点を生成中..."):
             try:
-                inputs = processor(images=img_256, return_tensors="pt")
+                # 前処理を自前でテンソル化 (バッチ次元追加: [1, 3, 256, 256])
+                img_tensor = transform(img_256).unsqueeze(0)
                 camera_pose = torch.tensor([[yaw, pitch]], dtype=torch.float32)
                 
                 with torch.no_grad():
-                    outputs = model(**inputs, pose=camera_pose)
+                    # モデルに直接テンソルを入力
+                    outputs = model(pixel_values=img_tensor, pose=camera_pose)
                     
                     if hasattr(outputs, "logits"):
                         output_tensor = outputs.logits
@@ -66,14 +74,18 @@ if uploaded_file:
                     else:
                         output_tensor = outputs[0]
                     
+                    # テンソルを画像用フォーマットに戻す
                     out_img_np = output_tensor.squeeze(0).cpu().numpy()
                     if out_img_np.shape[0] in [1, 3]:
                         out_img_np = np.transpose(out_img_np, (1, 2, 0))
                     
+                    # [-1, 1] や [0, 1] を [0, 255] に戻す処理
+                    if out_img_np.min() < 0:
+                        out_img_np = (out_img_np + 1.0) / 2.0
                     if out_img_np.max() <= 1.0:
-                        out_img_np = (out_img_np * 255).astype(np.uint8)
+                        out_img_np = (out_img_np * 255).clip(0, 255).astype(np.uint8)
                     else:
-                        out_img_np = out_img_np.astype(np.uint8)
+                        out_img_np = out_img_np.clip(0, 255).astype(np.uint8)
                     
                     generated_img = Image.fromarray(out_img_np)
 
