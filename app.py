@@ -30,7 +30,7 @@ if extracted_folder not in sys.path:
     sys.path.insert(0, extracted_folder)
 
 # ---------------------------------------------------------
-# 2. ページ構成 & デザイン（サイドバー消去）
+# 2. ページ構成 & デザイン
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Xcqi i-air",
@@ -81,8 +81,8 @@ if uploaded_file:
 
     file_id = uploaded_file.name + str(uploaded_file.size)
     
-    # 画像アップロード時に8方向を一括推論してキャッシュ
-    if "ovie_cache" not in st.session_state or st.session_state.get("file_id") != file_id:
+    # 画像アップロード時に5方向を一括推論してByte形式でキャッシュ（OSError対策）
+    if "ovie_b64_cache" not in st.session_state or st.session_state.get("file_id") != file_id:
         with st.spinner("OVIEで空間視点を一括生成中..."):
             img_tensor = ToTensor()(img_pil).unsqueeze(0).to(device)
             dummy_intrinsics = torch.zeros(1, 1, 3, 3, device=device)
@@ -119,12 +119,19 @@ if uploaded_file:
                     out_img_np = (np.clip(out_img_np, 0.0, 1.0) * 255).astype(np.uint8)
                     rendered_images[key] = Image.fromarray(out_img_np)
 
-            st.session_state.ovie_cache = rendered_images
+            # OSErrorを防ぐため、PIL画像をバイト列データに変換してセッション保持
+            b64_cache = {}
+            for k, img in rendered_images.items():
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                b64_cache[k] = buf.getvalue()
+
+            st.session_state.ovie_b64_cache = b64_cache
             st.session_state.current_key = "center"
             st.session_state.file_id = file_id
             gc.collect()
 
-    # 表示コントロールボタン（十字キー配置）
+    # 十字キー配置コントロール
     col_u1, col_u2, col_u3 = st.columns([1, 1, 1])
     with col_u2:
         if st.button("▲ 上", use_container_width=True):
@@ -148,8 +155,8 @@ if uploaded_file:
 
     st.markdown("---")
 
-    # 現在選択されている視点の画像を表示
+    # キャッシュされたバイト列から安全に画像表示
     curr_key = st.session_state.get("current_key", "center")
-    display_img = st.session_state.ovie_cache[curr_key]
+    img_bytes = st.session_state.ovie_b64_cache[curr_key]
     
-    st.image(display_img, caption=f"視点: {curr_key.upper()}", use_container_width=True)
+    st.image(img_bytes, caption=f"視点: {curr_key.upper()}", use_container_width=True)
