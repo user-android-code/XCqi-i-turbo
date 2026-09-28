@@ -1,8 +1,11 @@
 import gc
+import base64
+import io
 import torch
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
+import streamlit.components.v1 as components
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
 st.set_page_config(
@@ -11,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# サイドバー削除CSS
+# サイドバー・不要なUIの完全非表示
 st.markdown("""
     <style>
         [data-testid="collapsedControl"] {display: none;}
@@ -37,64 +40,139 @@ except Exception as e:
     st.error(f"モデルロード失敗: {e}")
     st.stop()
 
-# 画像生成ロジック
-def generate_warped_image(img_256, depth_norm, shift_x, shift_y):
-    img_np = np.array(img_256)
-    h, w, c = img_np.shape
-    grid_y, grid_x = np.mgrid[0:h, 0:w]
-    
-    offset_x = (grid_x + shift_x * depth_norm).astype(np.float32)
-    offset_y = (grid_y + shift_y * depth_norm).astype(np.float32)
-    
-    offset_x = np.clip(offset_x, 0, w - 1).astype(np.int32)
-    offset_y = np.clip(offset_y, 0, h - 1).astype(np.int32)
-    
-    warped_img = img_np[offset_y, offset_x]
-    return Image.fromarray(warped_img)
-
 uploaded_file = st.file_uploader("", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 
 if uploaded_file:
     raw_img = Image.open(uploaded_file).convert("RGB")
     img_256 = ImageOps.fit(raw_img, (256, 256), Image.Resampling.LANCZOS)
 
-    # 深度マップ計算（キャッシュ化）
-    file_id = uploaded_file.name + str(uploaded_file.size)
-    if "depth_norm" not in st.session_state or st.session_state.get("file_id") != file_id:
-        with st.spinner("深度を解析中..."):
-            inputs = image_processor(images=img_256, return_tensors="pt")
-            with torch.no_grad():
-                outputs = model(**inputs)
-                predicted_depth = outputs.predicted_depth
+    with st.spinner("iOS空間シーンを生成中..."):
+        # 1. 深度推定
+        inputs = image_processor(images=img_256, return_tensors="pt")
+        with torch.no_grad():
+            outputs = model(**inputs)
+            predicted_depth = outputs.predicted_depth
 
-            prediction = torch.nn.functional.interpolate(
-                predicted_depth.unsqueeze(1),
-                size=(256, 256),
-                mode="bicubic",
-                align_corners=False,
-            ).squeeze().cpu().numpy()
+        prediction = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=(256, 256),
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze().cpu().numpy()
 
-            st.session_state.depth_norm = (prediction - prediction.min()) / (prediction.max() - prediction.min() + 1e-8)
-            st.session_state.file_id = file_id
-            st.session_state.shift_x = 0
-            st.session_state.shift_y = 0
+        depth_norm = (prediction - prediction.min()) / (prediction.max() - prediction.min() + 1e-8)
 
-    st.markdown("##### 🖱️ 画像の上でドラッグしてアングルを傾けてね（離すと高画質生成！）")
+        # 2. 画像と深度マップをBase64データ化
+        buffered = io.BytesIO()
+        img_256.save(buffered, format="PNG")
+        img_b64 = base64.b64encode(buffered.getvalue()).decode()
 
-    # 2次元アングル指定スライダー（ドラッグして「手を離した瞬間」に生成が走るStreamlit標準の挙動）
-    col1, col2 = st.columns(2)
-    with col1:
-        shift_x = st.slider("左右アングル (Yaw)", -25, 25, st.session_state.shift_x, step=1, key="slider_x")
-    with col2:
-        shift_y = st.slider("上下アングル (Pitch)", -25, 25, st.session_state.shift_y, step=1, key="slider_y")
+        depth_img = Image.fromarray((depth_norm * 255).astype(np.uint8))
+        buffered_depth = io.BytesIO()
+        depth_img.save(buffered_depth, format="PNG")
+        depth_b64 = base64.b64encode(buffered_depth.getvalue()).decode()
 
-    # 値が変わったとき（つまみを離したとき）に生成
-    with st.spinner("2.5D空間視点を再構成中..."):
-        generated_img = generate_warped_image(img_256, st.session_state.depth_norm, shift_x, shift_y)
+    # 3. iOS Spatial Photo風 リアルタイム・パララックス（視差）キャンバス
+    html_code = f"""
+    <div style="display: flex; justify-content: center; align-items: center; padding: 10px;">
+        <div id="spatial-card" style="
+            position: relative;
+            width: 320px;
+            height: 320px;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.25);
+            cursor: pointer;
+            transform-style: preserve-3d;
+            transition: transform 0.1s ease-out;
+        ">
+            <canvas id="spatial-canvas" width="320" height="320" style="width: 100%; height: 100%; display: block;"></canvas>
+        </div>
+    </div>
 
-    st.image(generated_img, caption=f"生成された視点 (X: {shift_x}, Y: {shift_y})", use_container_width=True)
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        const card = document.getElementById('spatial-card');
+        const canvas = document.getElementById('spatial-canvas');
+        
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+        camera.position.z = 2.5;
 
-    if st.button("リセット (正面に戻す)", use_container_width=True):
-        st.session_state.shift_x = 0
-        st.session_state.shift_y = 0
-        st.rerun()
+        const renderer = new THREE.WebGLRenderer({{ canvas: canvas, antialias: true, alpha: true }});
+        renderer.setSize(320, 320);
+
+        const loader = new THREE.TextureLoader();
+        const imgTex = loader.load('data:image/png;base64,{img_b64}');
+        const depthTex = loader.load('data:image/png;base64,{depth_b64}');
+
+        // 空間シーン用カスタムシェーダー（視差・奥行き歪み）
+        const geometry = new THREE.PlaneGeometry(2, 2);
+        const material = new THREE.ShaderMaterial({{
+            uniforms: {{
+                uTexture: {{ value: imgTex }},
+                uDepth: {{ value: depthTex }},
+                uOffset: {{ value: new THREE.Vector2(0, 0) }}
+            }},
+            vertexShader: `
+                varying vec2 vUv;
+                void main() {{
+                    vUv = uv;
+                    gl_Position = vec4(position, 1.0);
+                }}
+            `,
+            fragmentShader: `
+                uniform sampler2D uTexture;
+                uniform sampler2D uDepth;
+                uniform vec2 uOffset;
+                varying vec2 vUv;
+                
+                void main() {{
+                    float d = texture2D(uDepth, vUv).r;
+                    vec2 displacedUv = vUv + uOffset * (d - 0.5) * 0.12;
+                    gl_FragColor = texture2D(uTexture, displacedUv);
+                }}
+            `
+        }});
+
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+
+        let mouseX = 0, mouseY = 0;
+        let targetX = 0, targetY = 0;
+
+        window.addEventListener('mousemove', (e) => {{
+            const rect = card.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            if (x >= 0 && x <= rect.width && y >= 0 && y <= rect.height) {{
+                // -1.0 ~ 1.0 の範囲に正規化
+                targetX = (x / rect.width) * 2 - 1;
+                targetY = -(y / rect.height) * 2 + 1;
+            }} else {{
+                targetX = 0;
+                targetY = 0;
+            }}
+        }});
+
+        function render() {{
+            requestAnimationFrame(render);
+
+            // iOS風のなめらかなイージング（慣性移動）
+            mouseX += (targetX - mouseX) * 0.1;
+            mouseY += (targetY - mouseY) * 0.1;
+
+            // 1. シェーダーの視差オフセット更新
+            material.uniforms.uOffset.value.set(-mouseX, -mouseY);
+
+            // 2. カード自体の立体的な傾き（iOSのSpatial Photoカード効果）
+            card.style.transform = `perspective(1000px) rotateY(${{mouseX * 15}}deg) rotateX(${{-mouseY * 15}}deg)`;
+
+            renderer.render(scene, camera);
+        }}
+        render();
+    </script>
+    """
+
+    components.html(html_code, height=360)
