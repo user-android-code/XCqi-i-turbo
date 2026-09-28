@@ -7,3 +7,4 @@ pillow
 numpy
 timm
 einops
+fairscale
