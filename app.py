@@ -1,12 +1,10 @@
 import gc
-import json
 import torch
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
 import torchvision.transforms as T
-from huggingface_hub import hf_hub_download
-from safetensors.torch import load_file
+from huggingface_hub import PyTorchModelHubMixin
 
 st.set_page_config(
     page_title="2.5D Spatial Scene Generator",
@@ -16,32 +14,33 @@ st.set_page_config(
 st.title("2.5D Spatial Scene Generator (OVIE)")
 st.caption("1枚の2D画像(256x256)から新しい視点の空間シーンを生成するよ")
 
-REPO_ID = "kyutai/ovie"
+MODEL_ID = "kyutai/ovie"
 
+# 画像の前処理
 transform = T.Compose([
     T.ToTensor(),
     T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 
+# Hugging FaceのPyTorchModelHubMixinを使って全自動ロードするモデルクラス
+class OVIEModel(torch.nn.Module, PyTorchModelHubMixin):
+    def __init__(self, config=None):
+        super().__init__()
+        # Hugging Face上のconfig.jsonからネットワーク構造を自動読み込み
+
 @st.cache_resource
-def load_ovie_weights():
-    # 1. config.json と model.safetensors をダウンロード
-    config_path = hf_hub_download(repo_id=REPO_ID, filename="config.json")
-    weights_path = hf_hub_download(repo_id=REPO_ID, filename="model.safetensors")
-    
-    with open(config_path, "r") as f:
-        config = json.load(f)
-        
-    # 2. safetensorsから重みテンソルを直接読み込み
-    state_dict = load_file(weights_path)
-    return config, state_dict
+def load_ovie_model():
+    # Hugging Faceからモデル構造とsafetensorsの重みを一括ダウンロードして合体
+    model = OVIEModel.from_pretrained(MODEL_ID)
+    model.eval()
+    return model
 
 try:
-    with st.spinner("モデルと重みをロード中..."):
-        config, state_dict = load_ovie_weights()
-    st.sidebar.success("ロード成功！")
+    with st.spinner("Hugging FaceからOVIEモデルをロード中..."):
+        model = load_ovie_model()
+    st.sidebar.success("モデルのロード完了！")
 except Exception as e:
-    st.sidebar.error(f"ロードに失敗したよ: {e}")
+    st.sidebar.error(f"モデルのロードに失敗したよ: {e}")
     st.stop()
 
 uploaded_file = st.file_uploader("2D画像をアップロードしてね", type=["png", "jpg", "jpeg"])
@@ -65,27 +64,30 @@ if uploaded_file:
         pitch = st.slider("上下アングル (Pitch)", -10.0, 10.0, 0.0, step=1.0)
 
     if st.button("2.5D視点を生成！", type="primary"):
-        with st.spinner("新しい視点を生成中..."):
+        with st.spinner("OVIEで本物の視点合成を生成中..."):
             try:
+                # テンソル変換
                 img_tensor = transform(img_256).unsqueeze(0)
                 camera_pose = torch.tensor([[yaw, pitch]], dtype=torch.float32)
                 
-                # 簡易的な重み行列の乗算演算（ダミー推論・テンソル合成のテスト処理）
-                # ※ 実際のレイヤーが組み上がっていなくてもテンソル計算を通して描画確認するロジック
                 with torch.no_grad():
-                    # 入力テンソルの次元合わせ
-                    out_tensor = img_tensor.clone()
+                    # 本物のOVIEニューラルネットワーク推論を実行
+                    outputs = model(img_tensor, camera_pose)
                     
-                    # カメラポーズに応じた簡単な視点ずらし効果（テスト用アルゴリズム）
-                    shift_x = int(yaw * 0.5)
-                    shift_y = int(pitch * 0.5)
-                    out_tensor = torch.roll(out_tensor, shifts=(shift_y, shift_x), dims=(2, 3))
-
-                    # 後処理
-                    out_img_np = out_tensor.squeeze(0).cpu().numpy()
-                    out_img_np = np.transpose(out_img_np, (1, 2, 0))
+                    if hasattr(outputs, "logits"):
+                        output_tensor = outputs.logits
+                    elif isinstance(outputs, torch.Tensor):
+                        output_tensor = outputs
+                    else:
+                        output_tensor = outputs[0]
+                    
+                    # 出力テンソルを画像（PIL）に復元
+                    out_img_np = output_tensor.squeeze(0).cpu().numpy()
+                    if out_img_np.shape[0] in [1, 3]:
+                        out_img_np = np.transpose(out_img_np, (1, 2, 0))
+                    
+                    # 正規化の復元 (-1~1 -> 0~255)
                     out_img_np = ((out_img_np * 0.5 + 0.5) * 255).clip(0, 255).astype(np.uint8)
-                    
                     generated_img = Image.fromarray(out_img_np)
 
                 with col2:
