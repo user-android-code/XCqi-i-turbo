@@ -1,20 +1,49 @@
+import sys
+import os
 import gc
 import base64
 import io
+import urllib.request
+import zipfile
 import torch
 import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
+from torchvision.transforms import ToTensor
 import streamlit.components.v1 as components
-from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
+# ---------------------------------------------------------
+# GitHubコードの自動ダウンロード（2ファイル完結用）
+# ---------------------------------------------------------
+OVIE_CODE_DIR = os.path.abspath("./ovie_repo")
+
+if not os.path.exists(OVIE_CODE_DIR):
+    os.makedirs(OVIE_CODE_DIR, exist_ok=True)
+    zip_path = os.path.join(OVIE_CODE_DIR, "ovie.zip")
+    url = "https://github.com/kyutai-labs/ovie/archive/refs/heads/main.zip"
+    urllib.request.urlretrieve(url, zip_path)
+    
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(OVIE_CODE_DIR)
+    
+    extracted_folder = os.path.join(OVIE_CODE_DIR, "ovie-main")
+    if extracted_folder not in sys.path:
+        sys.path.insert(0, extracted_folder)
+else:
+    extracted_folder = os.path.join(OVIE_CODE_DIR, "ovie-main")
+    if extracted_folder not in sys.path:
+        sys.path.insert(0, extracted_folder)
+
+# ---------------------------------------------------------
+# Streamlit ページ構成
+# ---------------------------------------------------------
 st.set_page_config(
     page_title="Xcqi i-air",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# サイドバー・不要なUIの完全非表示
+# サイドバー・不要UIの非表示
 st.markdown("""
     <style>
         [data-testid="collapsedControl"] {display: none;}
@@ -25,54 +54,95 @@ st.markdown("""
 
 st.title("Xcqi i-air")
 
-MODEL_ID = "depth-anything/Depth-Anything-V2-Small-hf"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ---------------------------------------------------------
+# kyutai/ovie ロード
+# ---------------------------------------------------------
 @st.cache_resource
-def load_depth_model():
-    image_processor = AutoImageProcessor.from_pretrained(MODEL_ID)
-    model = AutoModelForDepthEstimation.from_pretrained(MODEL_ID)
+def load_ovie_model():
+    from models.models import OVIEModel
+    from utils.pose_enc import extri_intri_to_pose_encoding
+    
+    model = OVIEModel.from_pretrained("kyutai/ovie", revision="v1.0").to(device)
     model.eval()
-    return image_processor, model
+    return model, extri_intri_to_pose_encoding
 
 try:
-    image_processor, model = load_depth_model()
+    with st.spinner("OVIEモデルをロード中..."):
+        model, extri_intri_to_pose_encoding = load_ovie_model()
 except Exception as e:
-    st.error(f"モデルロード失敗: {e}")
+    st.error(f"OVIEのロードに失敗しました: {e}")
     st.stop()
 
+# ---------------------------------------------------------
+# メイン処理
+# ---------------------------------------------------------
 uploaded_file = st.file_uploader("", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 
 if uploaded_file:
     raw_img = Image.open(uploaded_file).convert("RGB")
-    img_256 = ImageOps.fit(raw_img, (256, 256), Image.Resampling.LANCZOS)
+    image_size = getattr(model, "image_size", 256)
+    img_pil = ImageOps.fit(raw_img, (image_size, image_size), Image.Resampling.LANCZOS)
 
-    with st.spinner("iOS空間シーンを生成中..."):
-        # 1. 深度推定
-        inputs = image_processor(images=img_256, return_tensors="pt")
-        with torch.no_grad():
-            outputs = model(**inputs)
-            predicted_depth = outputs.predicted_depth
+    file_id = uploaded_file.name + str(uploaded_file.size)
+    if "ovie_cache" not in st.session_state or st.session_state.get("file_id") != file_id:
+        with st.spinner("OVIEで8方向の空間視点を生成中..."):
+            img_tensor = ToTensor()(img_pil).unsqueeze(0).to(device)
+            dummy_intrinsics = torch.zeros(1, 1, 3, 3, device=device)
 
-        prediction = torch.nn.functional.interpolate(
-            predicted_depth.unsqueeze(1),
-            size=(256, 256),
-            mode="bicubic",
-            align_corners=False,
-        ).squeeze().cpu().numpy()
+            angles = {
+                "center": (0.0, 0.0),
+                "left": (-1.25, 0.0),
+                "right": (1.25, 0.0),
+                "up": (0.0, 0.5),
+                "down": (0.0, -0.5),
+                "top_left": (-1.0, 0.4),
+                "top_right": (1.0, 0.4),
+                "bottom_left": (-1.0, -0.4),
+                "bottom_right": (1.0, -0.4),
+            }
 
-        depth_norm = (prediction - prediction.min()) / (prediction.max() - prediction.min() + 1e-8)
+            rendered_images = {"center": img_pil}
 
-        # 2. 画像と深度マップをBase64データ化
-        buffered = io.BytesIO()
-        img_256.save(buffered, format="PNG")
-        img_b64 = base64.b64encode(buffered.getvalue()).decode()
+            for key, (pos_x, pos_y) in angles.items():
+                if key == "center":
+                    continue
+                
+                extrinsics = torch.tensor([[[1.0, 0.0, 0.0, pos_x],
+                                            [0.0, 1.0, 0.0, pos_y],
+                                            [0.0, 0.0, 1.0, -2.0]]], device=device)
 
-        depth_img = Image.fromarray((depth_norm * 255).astype(np.uint8))
-        buffered_depth = io.BytesIO()
-        depth_img.save(buffered_depth, format="PNG")
-        depth_b64 = base64.b64encode(buffered_depth.getvalue()).decode()
+                camera = extri_intri_to_pose_encoding(
+                    extrinsics=extrinsics.unsqueeze(0),
+                    intrinsics=dummy_intrinsics,
+                    image_size_hw=(image_size, image_size),
+                )
+                cam_token = camera[..., :7].squeeze(0)
 
-    # 3. iOS Spatial Photo風 リアルタイム・パララックス（視差）キャンバス
+                with torch.no_grad():
+                    pred = model(x=img_tensor, cam_params=cam_token)
+                    out_tensor = pred.squeeze(0).cpu()
+                    out_img_np = out_tensor.numpy().transpose(1, 2, 0)
+                    out_img_np = (np.clip(out_img_np, 0.0, 1.0) * 255).astype(np.uint8)
+                    rendered_images[key] = Image.fromarray(out_img_np)
+
+            # Base64化
+            b64_dict = {}
+            for k, img in rendered_images.items():
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                b64_dict[k] = base64.b64encode(buf.getvalue()).decode()
+
+            st.session_state.ovie_cache = b64_dict
+            st.session_state.file_id = file_id
+            gc.collect()
+
+    b64_data = st.session_state.ovie_cache
+
+    # ---------------------------------------------------------
+    # マウスポインター追従（iOS 26 空間シーン演出）
+    # ---------------------------------------------------------
     html_code = f"""
     <div style="display: flex; justify-content: center; align-items: center; padding: 10px;">
         <div id="spatial-card" style="
@@ -86,92 +156,54 @@ if uploaded_file:
             transform-style: preserve-3d;
             transition: transform 0.1s ease-out;
         ">
-            <canvas id="spatial-canvas" width="320" height="320" style="width: 100%; height: 100%; display: block;"></canvas>
+            <img id="scene-img" src="data:image/png;base64,{b64_data['center']}" style="width: 100%; height: 100%; object-fit: cover; display: block;" />
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script>
         const card = document.getElementById('spatial-card');
-        const canvas = document.getElementById('spatial-canvas');
-        
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
-        camera.position.z = 2.5;
+        const img = document.getElementById('scene-img');
 
-        const renderer = new THREE.WebGLRenderer({{ canvas: canvas, antialias: true, alpha: true }});
-        renderer.setSize(320, 320);
-
-        const loader = new THREE.TextureLoader();
-        const imgTex = loader.load('data:image/png;base64,{img_b64}');
-        const depthTex = loader.load('data:image/png;base64,{depth_b64}');
-
-        // 空間シーン用カスタムシェーダー（視差・奥行き歪み）
-        const geometry = new THREE.PlaneGeometry(2, 2);
-        const material = new THREE.ShaderMaterial({{
-            uniforms: {{
-                uTexture: {{ value: imgTex }},
-                uDepth: {{ value: depthTex }},
-                uOffset: {{ value: new THREE.Vector2(0, 0) }}
-            }},
-            vertexShader: `
-                varying vec2 vUv;
-                void main() {{
-                    vUv = uv;
-                    gl_Position = vec4(position, 1.0);
-                }}
-            `,
-            fragmentShader: `
-                uniform sampler2D uTexture;
-                uniform sampler2D uDepth;
-                uniform vec2 uOffset;
-                varying vec2 vUv;
-                
-                void main() {{
-                    float d = texture2D(uDepth, vUv).r;
-                    vec2 displacedUv = vUv + uOffset * (d - 0.5) * 0.12;
-                    gl_FragColor = texture2D(uTexture, displacedUv);
-                }}
-            `
-        }});
-
-        const mesh = new THREE.Mesh(geometry, material);
-        scene.add(mesh);
-
-        let mouseX = 0, mouseY = 0;
-        let targetX = 0, targetY = 0;
+        const images = {{
+            center: "data:image/png;base64,{b64_data['center']}",
+            left: "data:image/png;base64,{b64_data['left']}",
+            right: "data:image/png;base64,{b64_data['right']}",
+            up: "data:image/png;base64,{b64_data['up']}",
+            down: "data:image/png;base64,{b64_data['down']}",
+            top_left: "data:image/png;base64,{b64_data['top_left']}",
+            top_right: "data:image/png;base64,{b64_data['top_right']}",
+            bottom_left: "data:image/png;base64,{b64_data['bottom_left']}",
+            bottom_right: "data:image/png;base64,{b64_data['bottom_right']}"
+        }};
 
         window.addEventListener('mousemove', (e) => {{
             const rect = card.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
+            const x = (e.clientX - rect.left) / rect.width;
+            const y = (e.clientY - rect.top) / rect.height;
 
-            if (x >= 0 && x <= rect.width && y >= 0 && y <= rect.height) {{
-                // -1.0 ~ 1.0 の範囲に正規化
-                targetX = (x / rect.width) * 2 - 1;
-                targetY = -(y / rect.height) * 2 + 1;
+            if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {{
+                const rotX = (y - 0.5) * -20;
+                const rotY = (x - 0.5) * 20;
+                card.style.transform = `perspective(1000px) rotateX(${{rotX}}deg) rotateY(${{rotY}}deg)`;
+
+                let key = "center";
+                if (x < 0.35 && y < 0.35) key = "top_left";
+                else if (x > 0.65 && y < 0.35) key = "top_right";
+                else if (x < 0.35 && y > 0.65) key = "bottom_left";
+                else if (x > 0.65 && y > 0.65) key = "bottom_right";
+                else if (x < 0.35) key = "left";
+                else if (x > 0.65) key = "right";
+                else if (y < 0.35) key = "up";
+                else if (y > 0.65) key = "down";
+
+                if (img.src !== images[key]) {{
+                    img.src = images[key];
+                }}
             }} else {{
-                targetX = 0;
-                targetY = 0;
+                card.style.transform = `perspective(1000px) rotateX(0deg) rotateY(0deg)`;
+                img.src = images["center"];
             }}
         }});
-
-        function render() {{
-            requestAnimationFrame(render);
-
-            // iOS風のなめらかなイージング（慣性移動）
-            mouseX += (targetX - mouseX) * 0.1;
-            mouseY += (targetY - mouseY) * 0.1;
-
-            // 1. シェーダーの視差オフセット更新
-            material.uniforms.uOffset.value.set(-mouseX, -mouseY);
-
-            // 2. カード自体の立体的な傾き（iOSのSpatial Photoカード効果）
-            card.style.transform = `perspective(1000px) rotateY(${{mouseX * 15}}deg) rotateX(${{-mouseY * 15}}deg)`;
-
-            renderer.render(scene, camera);
-        }}
-        render();
     </script>
     """
 
