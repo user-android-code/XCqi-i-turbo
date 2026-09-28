@@ -6,3 +6,4 @@ safetensors
 pillow
 numpy
 timm
+einops
