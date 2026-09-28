@@ -10,10 +10,9 @@ import numpy as np
 import streamlit as st
 from PIL import Image, ImageOps
 from torchvision.transforms import ToTensor
-import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
-# GitHubコードの自動ダウンロード（2ファイル完結用）
+# 1. GitHubコードの自動取得（2ファイル完結用）
 # ---------------------------------------------------------
 OVIE_CODE_DIR = os.path.abspath("./ovie_repo")
 
@@ -25,17 +24,13 @@ if not os.path.exists(OVIE_CODE_DIR):
     
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(OVIE_CODE_DIR)
-    
-    extracted_folder = os.path.join(OVIE_CODE_DIR, "ovie-main")
-    if extracted_folder not in sys.path:
-        sys.path.insert(0, extracted_folder)
-else:
-    extracted_folder = os.path.join(OVIE_CODE_DIR, "ovie-main")
-    if extracted_folder not in sys.path:
-        sys.path.insert(0, extracted_folder)
+
+extracted_folder = os.path.join(OVIE_CODE_DIR, "ovie-main")
+if extracted_folder not in sys.path:
+    sys.path.insert(0, extracted_folder)
 
 # ---------------------------------------------------------
-# Streamlit ページ構成
+# 2. ページ構成 & デザイン（サイドバー消去）
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Xcqi i-air",
@@ -43,7 +38,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# サイドバー・不要UIの非表示
 st.markdown("""
     <style>
         [data-testid="collapsedControl"] {display: none;}
@@ -57,7 +51,7 @@ st.title("Xcqi i-air")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------------------------------------------------
-# kyutai/ovie ロード
+# 3. OVIEモデルロード
 # ---------------------------------------------------------
 @st.cache_resource
 def load_ovie_model():
@@ -72,11 +66,11 @@ try:
     with st.spinner("OVIEモデルをロード中..."):
         model, extri_intri_to_pose_encoding = load_ovie_model()
 except Exception as e:
-    st.error(f"OVIEのロードに失敗しました: {e}")
+    st.error(f"OVIEモデルのロードに失敗したよ: {e}")
     st.stop()
 
 # ---------------------------------------------------------
-# メイン処理
+# 4. メイン処理 & UI
 # ---------------------------------------------------------
 uploaded_file = st.file_uploader("", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 
@@ -86,8 +80,10 @@ if uploaded_file:
     img_pil = ImageOps.fit(raw_img, (image_size, image_size), Image.Resampling.LANCZOS)
 
     file_id = uploaded_file.name + str(uploaded_file.size)
+    
+    # 画像アップロード時に8方向を一括推論してキャッシュ
     if "ovie_cache" not in st.session_state or st.session_state.get("file_id") != file_id:
-        with st.spinner("OVIEで8方向の空間視点を生成中..."):
+        with st.spinner("OVIEで空間視点を一括生成中..."):
             img_tensor = ToTensor()(img_pil).unsqueeze(0).to(device)
             dummy_intrinsics = torch.zeros(1, 1, 3, 3, device=device)
 
@@ -97,10 +93,6 @@ if uploaded_file:
                 "right": (1.25, 0.0),
                 "up": (0.0, 0.5),
                 "down": (0.0, -0.5),
-                "top_left": (-1.0, 0.4),
-                "top_right": (1.0, 0.4),
-                "bottom_left": (-1.0, -0.4),
-                "bottom_right": (1.0, -0.4),
             }
 
             rendered_images = {"center": img_pil}
@@ -127,84 +119,37 @@ if uploaded_file:
                     out_img_np = (np.clip(out_img_np, 0.0, 1.0) * 255).astype(np.uint8)
                     rendered_images[key] = Image.fromarray(out_img_np)
 
-            # Base64化
-            b64_dict = {}
-            for k, img in rendered_images.items():
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                b64_dict[k] = base64.b64encode(buf.getvalue()).decode()
-
-            st.session_state.ovie_cache = b64_dict
+            st.session_state.ovie_cache = rendered_images
+            st.session_state.current_key = "center"
             st.session_state.file_id = file_id
             gc.collect()
 
-    b64_data = st.session_state.ovie_cache
+    # 表示コントロールボタン（十字キー配置）
+    col_u1, col_u2, col_u3 = st.columns([1, 1, 1])
+    with col_u2:
+        if st.button("▲ 上", use_container_width=True):
+            st.session_state.current_key = "up"
 
-    # ---------------------------------------------------------
-    # マウスポインター追従（iOS 26 空間シーン演出）
-    # ---------------------------------------------------------
-    html_code = f"""
-    <div style="display: flex; justify-content: center; align-items: center; padding: 10px;">
-        <div id="spatial-card" style="
-            position: relative;
-            width: 320px;
-            height: 320px;
-            border-radius: 20px;
-            overflow: hidden;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.25);
-            cursor: pointer;
-            transform-style: preserve-3d;
-            transition: transform 0.1s ease-out;
-        ">
-            <img id="scene-img" src="data:image/png;base64,{b64_data['center']}" style="width: 100%; height: 100%; object-fit: cover; display: block;" />
-        </div>
-    </div>
+    col_m1, col_m2, col_m3 = st.columns([1, 1, 1])
+    with col_m1:
+        if st.button("◀ 左", use_container_width=True):
+            st.session_state.current_key = "left"
+    with col_m2:
+        if st.button("正面 (0)", use_container_width=True):
+            st.session_state.current_key = "center"
+    with col_m3:
+        if st.button("右 ▶", use_container_width=True):
+            st.session_state.current_key = "right"
 
-    <script>
-        const card = document.getElementById('spatial-card');
-        const img = document.getElementById('scene-img');
+    col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
+    with col_d2:
+        if st.button("▼ 下", use_container_width=True):
+            st.session_state.current_key = "down"
 
-        const images = {{
-            center: "data:image/png;base64,{b64_data['center']}",
-            left: "data:image/png;base64,{b64_data['left']}",
-            right: "data:image/png;base64,{b64_data['right']}",
-            up: "data:image/png;base64,{b64_data['up']}",
-            down: "data:image/png;base64,{b64_data['down']}",
-            top_left: "data:image/png;base64,{b64_data['top_left']}",
-            top_right: "data:image/png;base64,{b64_data['top_right']}",
-            bottom_left: "data:image/png;base64,{b64_data['bottom_left']}",
-            bottom_right: "data:image/png;base64,{b64_data['bottom_right']}"
-        }};
+    st.markdown("---")
 
-        window.addEventListener('mousemove', (e) => {{
-            const rect = card.getBoundingClientRect();
-            const x = (e.clientX - rect.left) / rect.width;
-            const y = (e.clientY - rect.top) / rect.height;
-
-            if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {{
-                const rotX = (y - 0.5) * -20;
-                const rotY = (x - 0.5) * 20;
-                card.style.transform = `perspective(1000px) rotateX(${{rotX}}deg) rotateY(${{rotY}}deg)`;
-
-                let key = "center";
-                if (x < 0.35 && y < 0.35) key = "top_left";
-                else if (x > 0.65 && y < 0.35) key = "top_right";
-                else if (x < 0.35 && y > 0.65) key = "bottom_left";
-                else if (x > 0.65 && y > 0.65) key = "bottom_right";
-                else if (x < 0.35) key = "left";
-                else if (x > 0.65) key = "right";
-                else if (y < 0.35) key = "up";
-                else if (y > 0.65) key = "down";
-
-                if (img.src !== images[key]) {{
-                    img.src = images[key];
-                }}
-            }} else {{
-                card.style.transform = `perspective(1000px) rotateX(0deg) rotateY(0deg)`;
-                img.src = images["center"];
-            }}
-        }});
-    </script>
-    """
-
-    components.html(html_code, height=360)
+    # 現在選択されている視点の画像を表示
+    curr_key = st.session_state.get("current_key", "center")
+    display_img = st.session_state.ovie_cache[curr_key]
+    
+    st.image(display_img, caption=f"視点: {curr_key.upper()}", use_container_width=True)
