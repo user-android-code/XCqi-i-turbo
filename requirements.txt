@@ -1,7 +1,6 @@
 streamlit
 torch
 torchvision
-huggingface_hub
-safetensors
+transformers
 pillow
 numpy
