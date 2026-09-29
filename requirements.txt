@@ -1,7 +1,7 @@
 streamlit
 torch
 torchvision
-huggingface_hub
+huggingface-hub>=1.5.0,<2.0.0
 safetensors
 pillow
 numpy
