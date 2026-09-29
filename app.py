@@ -1,177 +1,100 @@
-import sys
-import os
-import gc
-import base64
-import io
-import urllib.request
-import zipfile
+import streamlit as st
 import torch
 import numpy as np
-import streamlit as st
-from PIL import Image, ImageOps
+import plotly.graph_objects as go
+from PIL import Image
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
-# ---------------------------------------------------------
-# 1. GitHubからリポジトリを自動取得 & パス設定
-# ---------------------------------------------------------
-REPO_DIR = os.path.abspath("./dvlt_github_repo")
-EXTRACTED_DIR = os.path.join(REPO_DIR, "dvlt-main")
+st.set_page_config(page_title="2D to 3D Spatial Scene", layout="wide")
+st.title("🖼️️ Hugging Faceモデルで作る3D空間シーン")
 
-if not os.path.exists(EXTRACTED_DIR):
-    os.makedirs(REPO_DIR, exist_ok=True)
-    zip_path = os.path.join(REPO_DIR, "repo.zip")
-    url = "https://github.com/nv-tlabs/dvlt/archive/refs/heads/main.zip"
-    
-    try:
-        urllib.request.urlretrieve(url, zip_path)
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(REPO_DIR)
-        if os.path.exists(zip_path):
-            os.remove(zip_path)
-    except Exception as e:
-        st.error(f"GitHubからのコード取得失敗: {e}")
-
-if EXTRACTED_DIR not in sys.path and os.path.exists(EXTRACTED_DIR):
-    sys.path.insert(0, EXTRACTED_DIR)
-
-# ---------------------------------------------------------
-# 2. ページ構成
-# ---------------------------------------------------------
-st.set_page_config(
-    page_title="Xcqi i-air",
-    layout="centered",
-    initial_sidebar_state="collapsed"
-)
-
-st.markdown("""
-    <style>
-        [data-testid="collapsedControl"] {display: none;}
-        section[data-testid="stSidebar"] {display: none;}
-        .block-container {padding-top: 1rem;}
-    </style>
-""", unsafe_allow_html=True)
-
-st.title("Xcqi i-air")
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# ---------------------------------------------------------
-# 3. DVLT / 視点生成エンジンの安全なロード
-# ---------------------------------------------------------
+# 1. Hugging Faceから軽量・高品質モデル（Depth Anything V2 Small: 約98MB）をロード
 @st.cache_resource
-def load_view_engine():
-    # リポジトリ内の全Pythonファイルを探索してモデル/変換処理を読み込み
-    loaded_module = None
-    if os.path.exists(EXTRACTED_DIR):
-        import importlib.util
-        for root, _, files in os.walk(EXTRACTED_DIR):
-            for file in files:
-                if file.endswith(".py") and not file.startswith("__"):
-                    mod_name = file[:-3]
-                    file_path = os.path.join(root, file)
-                    spec = importlib.util.spec_from_file_location(mod_name, file_path)
-                    if spec and spec.loader:
-                        try:
-                            mod = importlib.util.module_from_spec(spec)
-                            spec.loader.exec_module(mod)
-                            # モデルと思われるクラスまたは関数の検知
-                            for attr in dir(mod):
-                                if "DVLT" in attr or "Model" in attr or "Pipeline" in attr:
-                                    return getattr(mod, attr)
-                        except Exception:
-                            continue
-    return None
+def load_hf_depth_model():
+    model_id = "depth-anything/Depth-Anything-V2-Small-hf"
+    processor = AutoImageProcessor.from_pretrained(model_id)
+    model = AutoModelForDepthEstimation.from_pretrained(model_id)
+    model.eval()
+    return processor, model
 
-engine = load_view_engine()
+with st.spinner("Hugging Faceからモデル（約98MB）を読み込み中..."):
+    processor, model = load_hf_depth_model()
 
-# ---------------------------------------------------------
-# 4. 2.5D視点変換処理（未描画エリア補完・パースペクティブ変形）
-# ---------------------------------------------------------
-def render_perspective(pil_img, shift_x=0.0, shift_y=0.0):
-    w, h = pil_img.size
-    img_np = np.array(pil_img)
+# 画像アップロード
+uploaded_file = st.file_uploader("画像をアップロードしてね", type=["jpg", "png", "jpeg"])
+
+if uploaded_file is not None:
+    # 画像読み込み ＆ メモリ節約用に最大512pxにリサイズ
+    input_image = Image.open(uploaded_file).convert("RGB")
+    input_image.thumbnail((512, 512))
+    img_np = np.array(input_image)
     
-    # パースペクティブ射影行列の計算
-    dx = int(shift_x * w * 0.15)
-    dy = int(shift_y * h * 0.15)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.image(input_image, caption="元画像", use_container_width=True)
+
+    # サイドバーで伸縮・膨らみ調整
+    st.sidebar.header("3D変形・伸縮パラメータ")
+    depth_scale = st.sidebar.slider("膨らみ具合（Z軸の深さ）", 0.0, 2.0, 0.5, 0.05)
+    stretch_x = st.sidebar.slider("横方向の伸縮（X軸）", 0.5, 3.0, 1.0, 0.1)
+    stretch_y = st.sidebar.slider("縦方向の伸縮（Y軸）", 0.5, 3.0, 1.0, 0.1)
     
-    from torchvision.transforms.functional import perspective
+    # 2. 深度推論
+    with st.spinner("深度（Depth）を推論中..."):
+        inputs = processor(images=input_image, return_tensors="pt")
+        with torch.no_grad():
+            outputs = model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        # 元画像サイズに補間
+        prediction = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=img_np.shape[:2],
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze()
+
+        depth_map = prediction.cpu().numpy()
+        # 0 ~ 1 に正規化（手前を1、奥を0にする）
+        depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min() + 1e-8)
+
+    with col2:
+        st.image(depth_map, caption="Hugging Faceモデルで推論した深度マップ", use_container_width=True)
+
+    # 3. 3D空間への配置と膨らまし（メッシュ化）
+    h, w, _ = img_np.shape
+    x = np.linspace(-1 * stretch_x, 1 * stretch_x, w)
+    y = np.linspace(1 * stretch_y, -1 * stretch_y, h) # Y軸反転
+    grid_x, grid_y = np.meshgrid(x, y)
     
-    startpoints = [[0, 0], [w, 0], [w, h], [0, h]]
-    endpoints = [
-        [max(0, dx), max(0, dy)],
-        [min(w, w + dx), max(0, -dy)],
-        [min(w, w - dx), min(h, h - dy)],
-        [max(0, -dx), min(h, h + dy)]
-    ]
+    # 深度マップでZ軸（奥行き）を膨らませる
+    grid_z = depth_map * depth_scale
+
+    # 描画軽量化のためにサンプリング（2ピクセルごと）
+    step = 2
     
-    transformed = perspective(pil_img, startpoints, endpoints)
-    return transformed
+    # 4. Plotly 3Dで可視化（回転・伸縮・自由な視点変更が可能）
+    fig = go.Figure(data=[
+        go.Surface(
+            x=grid_x[::step, ::step],
+            y=grid_y[::step, ::step],
+            z=grid_z[::step, ::step],
+            surfacecolor=np.mean(img_np[::step, ::step], axis=2),
+            colorscale='Viridis',
+            showscale=False
+        )
+    ])
 
-# ---------------------------------------------------------
-# 5. UI & 視点切り替え処理
-# ---------------------------------------------------------
-uploaded_file = st.file_uploader("", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
+    fig.update_layout(
+        title="3D空間シーン（ドラッグで横から見て膨らみを確認してね）",
+        autosize=True,
+        scene=dict(
+            xaxis=dict(title="X (横)"),
+            yaxis=dict(title="Y (縦)"),
+            zaxis=dict(title="Z (膨らみ/奥行き)"),
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=40)
+    )
 
-if uploaded_file:
-    raw_img = Image.open(uploaded_file).convert("RGB")
-    img_pil = ImageOps.fit(raw_img, (512, 512), Image.Resampling.LANCZOS)
-
-    file_id = uploaded_file.name + str(uploaded_file.size)
-
-    if "dvlt_cache" not in st.session_state or st.session_state.get("file_id") != file_id:
-        with st.spinner("立体視・未描画エリアを推論処理中..."):
-            
-            angles = {
-                "center": (0.0, 0.0),
-                "left": (-1.0, 0.0),
-                "right": (1.0, 0.0),
-                "up": (0.0, -1.0),
-                "down": (0.0, 1.0),
-            }
-
-            b64_cache = {}
-
-            for key, (sx, sy) in angles.items():
-                if key == "center":
-                    out_img = img_pil
-                else:
-                    out_img = render_perspective(img_pil, shift_x=sx, shift_y=sy)
-
-                buf = io.BytesIO()
-                out_img.save(buf, format="PNG")
-                b64_cache[key] = base64.b64encode(buf.getvalue()).decode()
-
-            st.session_state.dvlt_cache = b64_cache
-            st.session_state.current_key = "center"
-            st.session_state.file_id = file_id
-            gc.collect()
-
-    # 十字キーUI
-    col_u1, col_u2, col_u3 = st.columns([1, 1, 1])
-    with col_u2:
-        if st.button("▲ 上", use_container_width=True):
-            st.session_state.current_key = "up"
-
-    col_m1, col_m2, col_m3 = st.columns([1, 1, 1])
-    with col_m1:
-        if st.button("◀ 左", use_container_width=True):
-            st.session_state.current_key = "left"
-    with col_m2:
-        if st.button("正面 (0)", use_container_width=True):
-            st.session_state.current_key = "center"
-    with col_m3:
-        if st.button("右 ▶", use_container_width=True):
-            st.session_state.current_key = "right"
-
-    col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
-    with col_d2:
-        if st.button("▼ 下", use_container_width=True):
-            st.session_state.current_key = "down"
-
-    st.markdown("---")
-
-    # 画像描画
-    curr_key = st.session_state.get("current_key", "center")
-    curr_b64 = st.session_state.dvlt_cache[curr_key]
-
-    st.image(f"data:image/png;base64,{curr_b64}", caption=f"視点: {curr_key.upper()}", use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
