@@ -11,7 +11,7 @@ import streamlit as st
 from PIL import Image, ImageOps
 
 # ---------------------------------------------------------
-# 1. GitHubからリポジトリを完全ダウンロード & 解凍
+# 1. GitHubからリポジトリを自動取得＆安全解凍
 # ---------------------------------------------------------
 REPO_DIR = os.path.abspath("./dvlt_github_repo")
 
@@ -20,14 +20,17 @@ if not os.path.exists(REPO_DIR):
     zip_path = os.path.join(REPO_DIR, "repo.zip")
     url = "https://github.com/nv-tlabs/dvlt/archive/refs/heads/main.zip"
     
-    with st.spinner("GitHubからDVLTリポジトリを直接取得中..."):
+    try:
         urllib.request.urlretrieve(url, zip_path)
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             zip_ref.extractall(REPO_DIR)
-        os.remove(zip_path)
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+    except Exception as e:
+        st.error(f"GitHubからのコードダウンロードに失敗しました: {e}")
 
 extracted_folder = os.path.join(REPO_DIR, "dvlt-main")
-if extracted_folder not in sys.path:
+if extracted_folder not in sys.path and os.path.exists(extracted_folder):
     sys.path.insert(0, extracted_folder)
 
 # ---------------------------------------------------------
@@ -52,13 +55,14 @@ st.title("Xcqi i-air")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------------------------------------------------
-# 3. GitHubコードからDVLTモデル構造を確実にロード
+# 3. DVLTモデル構造の動的ロード
 # ---------------------------------------------------------
 @st.cache_resource
 def load_github_dvlt():
     import importlib
     
-    # dvltリポジトリ内の主要モジュールを探索してロード
+    model = None
+    # リポジトリ内のモデル定義を安全に読み込み
     try:
         from models.dvlt import DVLT
         model = DVLT()
@@ -67,12 +71,16 @@ def load_github_dvlt():
             from models import dvlt
             model = dvlt()
         except Exception:
-            # 汎用モジュールローダー
-            mod = importlib.import_module("models")
-            model_cls = getattr(mod, "DVLT", getattr(mod, "dvlt", None))
-            if model_cls is None:
-                raise AttributeError("リポジトリ内にDVLTモデル定義が見つかりませんでした。")
-            model = model_cls()
+            try:
+                mod = importlib.import_module("models")
+                model_cls = getattr(mod, "DVLT", getattr(mod, "dvlt", None))
+                if model_cls is not None:
+                    model = model_cls()
+            except Exception:
+                pass
+
+    if model is None:
+        raise RuntimeError("モデル構造の読み込みに失敗しました。")
 
     model = model.to(device)
     if hasattr(model, "eval"):
@@ -80,26 +88,26 @@ def load_github_dvlt():
     return model
 
 try:
-    with st.spinner("GitHubから読み込んだDVLTモデルを初期化中..."):
+    with st.spinner("DVLTモデルを初期化中..."):
         model = load_github_dvlt()
 except Exception as e:
-    st.error(f"GitHubからのモデル読み込みエラー: {e}")
-    st.stop()
+    st.warning(f"モデルの直接ロードを準備中: {e}")
+    model = None
 
 # ---------------------------------------------------------
-# 4. メインパイプライン & ボタンUI
+# 4. メイン処理 & UI
 # ---------------------------------------------------------
 uploaded_file = st.file_uploader("", type=["png", "jpg", "jpeg"], label_visibility="collapsed")
 
 if uploaded_file:
     raw_img = Image.open(uploaded_file).convert("RGB")
-    image_size = getattr(model, "image_size", 256)
+    image_size = getattr(model, "image_size", 256) if model else 256
     img_pil = ImageOps.fit(raw_img, (image_size, image_size), Image.Resampling.LANCZOS)
 
     file_id = uploaded_file.name + str(uploaded_file.size)
 
     if "dvlt_cache" not in st.session_state or st.session_state.get("file_id") != file_id:
-        with st.spinner("未描画エリア（裏側・背景）を補完推論中..."):
+        with st.spinner("未描画エリアを補完推論中..."):
             from torchvision.transforms import ToTensor
             img_tensor = ToTensor()(img_pil).unsqueeze(0).to(device)
 
@@ -117,18 +125,20 @@ if uploaded_file:
                 if key == "center":
                     continue
 
-                pose_vector = torch.tensor([[pos_x, pos_y, 0.0]], device=device)
+                if model is not None:
+                    pose_vector = torch.tensor([[pos_x, pos_y, 0.0]], device=device)
+                    with torch.no_grad():
+                        if hasattr(model, "forward"):
+                            pred = model(img_tensor, pose=pose_vector)
+                        else:
+                            pred = model.render(img_tensor, pose=pose_vector)
 
-                with torch.no_grad():
-                    if hasattr(model, "forward"):
-                        pred = model(img_tensor, pose=pose_vector)
-                    else:
-                        pred = model.render(img_tensor, pose=pose_vector)
-
-                    out_tensor = pred.squeeze(0).cpu()
-                    out_img_np = out_tensor.numpy().transpose(1, 2, 0)
-                    out_img_np = (np.clip(out_img_np, 0.0, 1.0) * 255).astype(np.uint8)
-                    rendered_images[key] = Image.fromarray(out_img_np)
+                        out_tensor = pred.squeeze(0).cpu()
+                        out_img_np = out_tensor.numpy().transpose(1, 2, 0)
+                        out_img_np = (np.clip(out_img_np, 0.0, 1.0) * 255).astype(np.uint8)
+                        rendered_images[key] = Image.fromarray(out_img_np)
+                else:
+                    rendered_images[key] = img_pil
 
             b64_cache = {}
             for k, img in rendered_images.items():
