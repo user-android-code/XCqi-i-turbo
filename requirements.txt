@@ -2,9 +2,8 @@ streamlit
 torch
 torchvision
 huggingface-hub>=1.5.0,<2.0.0
+transformers
+accelerate
 safetensors
 pillow
 numpy
-timm
-einops
-fairscale
